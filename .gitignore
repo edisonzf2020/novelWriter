@@ -67,3 +67,15 @@ ToC.txt
 # IDE
 .vscode
 .ruff_cache
+# BMAD (local only)
+.bmad-core/
+.bmad-*/
+
+.claude
+.clinerules
+.cursor
+.github
+.serena
+
+flattened-codebase.xml
+flattened-codebase.stats.md
