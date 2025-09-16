@@ -42,10 +42,10 @@ def test_error_hierarchy_is_available(error_type: type[BaseException]) -> None:
     assert isinstance(error, Exception)
 
 
-def test_api_methods_are_stubs() -> None:
-    """The API skeleton should raise NotImplementedError for now."""
+def test_transaction_methods_are_not_implemented_yet() -> None:
+    """Placeholder transaction helpers should still raise until implemented."""
 
     api = NWAiApi(project=object())
 
     with pytest.raises(NotImplementedError):
-        api.getProjectMeta()
+        api.begin_transaction()
