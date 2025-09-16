@@ -55,6 +55,7 @@
 | 语言 | Python 3 | `setup.cfg` 中指定 `python_requires >= 3.7` |
 | UI 框架 | PyQt6 | `setup.cfg` 中指定 `PyQt6>=6.4.0` |
 | 架构 | MVC + 分层 | **在 `docs/technical` 中有详细说明** |
+| 开发环境 | 项目专用 virtualenv | `source /Users/fanmac/AI/novelWriter/writer/bin/activate` 激活默认运行/测试环境 |
 
 ## 源码树与模块组织
 
