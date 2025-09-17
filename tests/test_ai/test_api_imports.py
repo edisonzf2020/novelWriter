@@ -47,10 +47,19 @@ def test_error_hierarchy_is_available(error_type: type[BaseException]) -> None:
     assert isinstance(error, Exception)
 
 
-def test_transaction_methods_are_not_implemented_yet() -> None:
-    """Placeholder transaction helpers should still raise until implemented."""
+def test_transaction_methods_basic_behaviour() -> None:
+    """Basic transaction lifecycle should be available on the facade."""
 
     api = NWAiApi(project=cast("NWProject", object()))
 
-    with pytest.raises(NotImplementedError):
-        api.begin_transaction()
+    transaction_id = api.begin_transaction()
+    assert isinstance(transaction_id, str)
+    assert transaction_id
+
+    with pytest.raises(NWAiApiError):
+        api.commit_transaction("different")
+
+    with pytest.raises(NWAiApiError):
+        api.rollback_transaction("different")
+
+    assert api.rollback_transaction(transaction_id) is True
