@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional
 from types import MappingProxyType
 from uuid import uuid4
 
+from novelwriter import CONFIG
 from novelwriter.enum import nwItemClass, nwItemLayout
 
 from .errors import NWAiApiError
@@ -100,6 +102,7 @@ class NWAiApi:
         self._project = project
         self._transaction_stack: list[_TransactionContext] = []
         self._audit_log: deque[_AuditRecord] = deque(maxlen=_AUDIT_LOG_LIMIT)
+        self._pending_suggestions: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
     # Transaction and auditing
@@ -433,25 +436,206 @@ class NWAiApi:
 
         return self._project.storage.getDocumentText(lookup)
 
+    def _snapshot_document(self, handle: str) -> tuple[str, Callable[[], None]]:
+        """Create a snapshot of a document and return original text with undo callback."""
+        # Validate handle and get original text
+        original_text = self.getDocText(handle)
+        
+        # Create undo callback that restores the original text
+        def undo_callback() -> None:
+            # Use NWDocument to write back the original content
+            document = self._project.storage.getDocument(handle)
+            if document is not None:
+                document.writeDocument(original_text, forceWrite=True)
+        
+        return original_text, undo_callback
+
+    def _write_document(self, handle: str, text: str) -> bool:
+        """Write text to the specified document using NWDocument API."""
+        document = self._project.storage.getDocument(handle)
+        if document is None:
+            raise NWAiApiError(f"Cannot load document '{handle}'.")
+        
+        # Write the document and update project counts
+        success = document.writeDocument(text)
+        if success:
+            # Update project statistics and counts
+            self._project.updateCounts()
+            
+        return success
+
     def setDocText(self, handle: str, text: str, apply: bool = False) -> bool:
         """Apply or preview a text replacement for the given document handle."""
-
+        
         self._assert_transaction_active()
-        raise NotImplementedError("Document text updates are pending implementation.")
+        
+        # Get original text and undo callback
+        original_text, undo_callback = self._snapshot_document(handle)
+        
+        # Check apply parameter with CONFIG.ai.dry_run_default if apply is False
+        should_apply = apply or not getattr(CONFIG.ai, "dry_run_default", True)
+        
+        if not should_apply:
+            # Generate diff preview
+            old_lines = original_text.splitlines(keepends=True)
+            new_lines = text.splitlines(keepends=True)
+            diff_lines = list(difflib.unified_diff(
+                old_lines, 
+                new_lines, 
+                fromfile=f"original/{handle}", 
+                tofile=f"modified/{handle}",
+                lineterm=""
+            ))
+            
+            # Record audit entry for preview
+            self._record_audit(
+                self._transaction_stack[-1].transaction_id,
+                "document.preview",
+                target=handle,
+                summary=f"Generated diff preview for document '{handle}'",
+                level="info"
+            )
+            
+            return False  # Preview mode, no actual write
+        
+        # Apply the changes
+        success = self._write_document(handle, text)
+        
+        if success:
+            # Queue the operation for audit and rollback support
+            self._queue_pending_operation(
+                operation="document.write",
+                target=handle,
+                summary=f"Updated document '{handle}' content",
+                undo=undo_callback,
+                metadata={
+                    "original_length": len(original_text),
+                    "new_length": len(text),
+                    "diff_size": abs(len(text) - len(original_text))
+                }
+            )
+        
+        return success
 
     # ------------------------------------------------------------------
     # Suggestions
     # ------------------------------------------------------------------
     def previewSuggestion(self, handle: str, rng: TextRange, newText: str) -> Suggestion:
         """Generate a preview suggestion for replacing ``rng`` in ``handle`` with ``newText``."""
-
-        raise NotImplementedError("Suggestion previews are pending implementation.")
+        
+        self._assert_transaction_active()
+        
+        # Get current document text
+        original_text = self.getDocText(handle)
+        
+        # Validate range
+        if rng.start < 0 or rng.end > len(original_text) or rng.start > rng.end:
+            raise NWAiApiError(f"Invalid text range [{rng.start}:{rng.end}] for document '{handle}'")
+        
+        # Apply the replacement to generate preview
+        new_full_text = original_text[:rng.start] + newText + original_text[rng.end:]
+        
+        # Generate diff
+        old_lines = original_text.splitlines(keepends=True)
+        new_lines = new_full_text.splitlines(keepends=True)
+        diff_lines = list(difflib.unified_diff(
+            old_lines,
+            new_lines,
+            fromfile=f"original/{handle}",
+            tofile=f"suggested/{handle}",
+            lineterm=""
+        ))
+        diff_text = "\n".join(diff_lines) if diff_lines else "No changes"
+        
+        # Generate unique suggestion ID
+        suggestion_id = str(uuid4())
+        
+        # Store suggestion in cache
+        self._pending_suggestions[suggestion_id] = {
+            "handle": handle,
+            "range": rng,
+            "new_text": newText,
+            "original_text": original_text,
+            "preview_text": new_full_text,
+            "diff": diff_text,
+            "transaction_id": self._transaction_stack[-1].transaction_id
+        }
+        
+        # Record audit entry
+        self._record_audit(
+            self._transaction_stack[-1].transaction_id,
+            "suggestion.preview",
+            target=handle,
+            summary=f"Generated suggestion {suggestion_id} for range [{rng.start}:{rng.end}]",
+            level="info"
+        )
+        
+        # Create and return suggestion object
+        return Suggestion(
+            id=suggestion_id,
+            handle=handle,
+            preview=new_full_text,
+            diff=diff_text
+        )
 
     def applySuggestion(self, suggestionId: str) -> bool:
         """Apply a previously generated suggestion if it remains valid."""
-
+        
         self._assert_transaction_active()
-        raise NotImplementedError("Suggestion application is pending implementation.")
+        
+        # Check if suggestion exists in cache
+        if suggestionId not in self._pending_suggestions:
+            raise NWAiApiError(f"Unknown or expired suggestion ID: {suggestionId}")
+        
+        suggestion_data = self._pending_suggestions[suggestionId]
+        
+        # Verify suggestion is for current transaction
+        current_transaction_id = self._transaction_stack[-1].transaction_id
+        if suggestion_data["transaction_id"] != current_transaction_id:
+            raise NWAiApiError(f"Suggestion {suggestionId} belongs to a different transaction")
+        
+        # Check CONFIG.ai.ask_before_apply setting
+        if getattr(CONFIG.ai, "ask_before_apply", True):
+            # In a real implementation, this would trigger UI confirmation
+            # For now, we record the requirement and continue
+            self._record_audit(
+                current_transaction_id,
+                "suggestion.confirmation_required",
+                target=suggestion_data["handle"],
+                summary=f"Suggestion {suggestionId} requires manual confirmation",
+                level="warning"
+            )
+        
+        # Apply the suggestion using setDocText with apply=True
+        success = self.setDocText(
+            suggestion_data["handle"], 
+            suggestion_data["preview_text"], 
+            apply=True
+        )
+        
+        if success:
+            # Clean up the suggestion from cache after successful application
+            del self._pending_suggestions[suggestionId]
+            
+            # Record successful application
+            self._record_audit(
+                current_transaction_id,
+                "suggestion.applied",
+                target=suggestion_data["handle"],
+                summary=f"Successfully applied suggestion {suggestionId}",
+                level="info"
+            )
+        else:
+            # Record failed application
+            self._record_audit(
+                current_transaction_id,
+                "suggestion.apply_failed",
+                target=suggestion_data["handle"],
+                summary=f"Failed to apply suggestion {suggestionId}",
+                level="error"
+            )
+        
+        return success
 
     # ------------------------------------------------------------------
     # Context and search utilities

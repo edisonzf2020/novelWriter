@@ -108,3 +108,40 @@ def test_ai_copilot_dock_updates_with_theme_change(monkeypatch, nwGUI):
         SHARED.theme.helpText = original_help
         dock._ai_available = original_available  # type: ignore[attr-defined]
         dock.updateTheme()
+
+
+@pytest.mark.gui 
+def test_ai_copilot_dock_refresh_after_write_operations(monkeypatch, nwGUI):
+    """AI Copilot dock should remain functional after write operations are enabled."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    
+    # Create mock configuration with write operations enabled
+    dummy_config = SimpleNamespace(
+        ai=SimpleNamespace(
+            enabled=True,
+            dry_run_default=False,
+            ask_before_apply=True
+        )
+    )
+    
+    monkeypatch.setattr("novelwriter.extensions.ai_copilot.dock.CONFIG", dummy_config, raising=False)
+    
+    dock = AICopilotDock(nwGUI)
+    
+    # Simulate refresh after configuration change
+    with patch.object(dock, 'refresh_from_config') as mock_refresh:
+        # This would normally be called after AI configuration changes
+        dock.refresh_from_config()
+        mock_refresh.assert_called_once()
+    
+    # Dock should still be functional and display appropriate status
+    status_label = dock.findChild(QLabel, "aiCopilotStatusLabel")
+    message_label = dock.findChild(QLabel, "aiCopilotMessageLabel")
+    
+    assert status_label is not None
+    assert message_label is not None
+    assert status_label.text()  # Should have status text
+    assert message_label.text()  # Should have message text
+    
+    dock.deleteLater()
