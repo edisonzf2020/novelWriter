@@ -25,7 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import QLabel, QDockWidget
+from PyQt6.QtWidgets import QComboBox, QDockWidget, QLabel
 
 from novelwriter import SHARED
 
@@ -44,9 +44,13 @@ def test_ai_copilot_dock_added_by_default(nwGUI):
 
     status_label = dock.findChild(QLabel, "aiCopilotStatusLabel")
     message_label = dock.findChild(QLabel, "aiCopilotMessageLabel")
+    scope_selector = dock.findChild(QComboBox, "aiContextScopeSelector")
 
     assert status_label is not None
     assert message_label is not None
+    assert scope_selector is not None
+    assert scope_selector.count() == 4
+    assert scope_selector.currentData() == "current_document"
     assert status_label.text()  # Placeholder text should always be populated
     assert message_label.text()  # Degradation notice or placeholder copy
 
@@ -144,4 +148,52 @@ def test_ai_copilot_dock_refresh_after_write_operations(monkeypatch, nwGUI):
     assert status_label.text()  # Should have status text
     assert message_label.text()  # Should have message text
     
+    dock.deleteLater()
+
+
+@pytest.mark.gui
+def test_ai_copilot_scope_selector_emits_signal(monkeypatch, qtbot, nwGUI):
+    """Changing the scope selector should emit the dedicated signal."""
+
+    dummy_config = SimpleNamespace(
+        ai=SimpleNamespace(enabled=True, api_key="token", api_key_from_env=False)
+    )
+    monkeypatch.setattr(
+        "novelwriter.extensions.ai_copilot.dock.CONFIG",
+        dummy_config,
+        raising=False,
+    )
+
+    dock = AICopilotDock(nwGUI)
+    selector = dock.findChild(QComboBox, "aiContextScopeSelector")
+    assert selector is not None
+
+    with qtbot.waitSignal(dock.contextScopeChanged) as blocker:
+        selector.setCurrentIndex(0)
+
+    assert blocker.args[0] == "selection"
+    assert dock.getCurrentScope() == "selection"
+    dock.deleteLater()
+
+
+@pytest.mark.gui
+def test_ai_copilot_set_context_scope_updates_selector(monkeypatch, nwGUI):
+    """Programmatic scope changes should update the selector widget."""
+
+    dummy_config = SimpleNamespace(
+        ai=SimpleNamespace(enabled=True, api_key="token", api_key_from_env=False)
+    )
+    monkeypatch.setattr(
+        "novelwriter.extensions.ai_copilot.dock.CONFIG",
+        dummy_config,
+        raising=False,
+    )
+
+    dock = AICopilotDock(nwGUI)
+    selector = dock.findChild(QComboBox, "aiContextScopeSelector")
+    assert selector is not None
+
+    dock.setContextScope("project")
+    assert selector.currentData() == "project"
+    assert dock.getCurrentScope() == "project"
     dock.deleteLater()

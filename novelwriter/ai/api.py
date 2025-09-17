@@ -15,6 +15,7 @@ from novelwriter.enum import nwItemClass, nwItemLayout
 
 from .errors import NWAiApiError
 from .models import BuildResult, DocumentRef, Suggestion, TextRange
+from .memory import ConversationMemory, ConversationTurn
 
 __all__ = ["NWAiApi"]
 
@@ -64,6 +65,13 @@ class _AuditRecord:
 
 _AUDIT_LOG_LIMIT = 1000
 
+_CONTEXT_SCOPES: tuple[str, ...] = (
+    "selection",
+    "current_document",
+    "outline",
+    "project",
+)
+
 _SCOPE_CLASS_MAP: Mapping[str, frozenset[nwItemClass]] = MappingProxyType(
     {
         "novel": frozenset({nwItemClass.NOVEL}),
@@ -103,6 +111,7 @@ class NWAiApi:
         self._transaction_stack: list[_TransactionContext] = []
         self._audit_log: deque[_AuditRecord] = deque(maxlen=_AUDIT_LOG_LIMIT)
         self._pending_suggestions: dict[str, dict[str, Any]] = {}
+        self._conversation_memory = ConversationMemory()
 
     # ------------------------------------------------------------------
     # Transaction and auditing
@@ -638,12 +647,380 @@ class NWAiApi:
         return success
 
     # ------------------------------------------------------------------
-    # Context and search utilities
+    # Context and conversation utilities
     # ------------------------------------------------------------------
-    def collectContext(self, mode: str) -> str:
-        """Collect contextual text for the AI Copilot using the selected ``mode``."""
+    def collectContext(
+        self,
+        scope: str = "current_document",
+        *,
+        selection_text: str | None = None,
+        max_length: int | None = None,
+        include_memory: bool = False,
+        memory_turns: int = 3,
+        include_cross_scope_memory: bool = True,
+        **kwargs: Any,
+    ) -> str:
+        """Collect contextual text for the AI Copilot using the selected scope.
 
-        raise NotImplementedError("Context collection is pending implementation.")
+        Args:
+            scope: Context scope identifier (selection, current_document, outline, project).
+            selection_text: Raw text that should be treated as the current selection when
+                ``scope`` is ``selection``.
+            max_length: Optional hard limit for the amount of text returned by the scope
+                collector. When omitted, scope-specific defaults are used.
+            include_memory: Whether recent conversation turns should be appended to the
+                collected context payload.
+            memory_turns: Maximum number of conversation turns to include when
+                ``include_memory`` is ``True``.
+            include_cross_scope_memory: When ``True`` the memory snippet may include turns
+                captured under other scopes if additional space remains.
+            **kwargs: Additional hints forwarded to scope collectors for forward
+                compatibility.
+
+        Returns:
+            Textual context assembled for the requested scope, optionally augmented with
+            conversation memory.
+
+        Raises:
+            NWAiApiError: If the scope is unknown or the context gathering fails.
+        """
+
+        scope_key = (scope or "current_document").strip().lower()
+        if scope_key not in _CONTEXT_SCOPES:
+            raise NWAiApiError(
+                f"Invalid context scope: '{scope}'. Must be one of: selection, current_document, outline, project",
+            )
+
+        if selection_text is None:
+            selection_text = kwargs.get("selection_text")
+        if max_length is None:
+            max_length = kwargs.get("max_length")
+
+        try:
+            if scope_key == "selection":
+                context_text = self._collectSelectionContext(selection_text=selection_text)
+            elif scope_key == "current_document":
+                context_text = self._collectCurrentDocumentContext(max_length=max_length)
+            elif scope_key == "outline":
+                context_text = self._collectOutlineContext(max_length=max_length)
+            else:
+                context_text = self._collectProjectContext(max_length=max_length)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self._record_audit(
+                None,
+                "context.collect.error",
+                summary=f"Failed to collect {scope_key} context: {exc}",
+                level="error",
+            )
+            raise NWAiApiError(
+                f"Failed to collect context for scope '{scope_key}': {exc}"
+            ) from exc
+
+        if include_memory:
+            memory_text = self._format_memory_context(
+                scope_key,
+                max_turns=memory_turns,
+                include_cross_scope=include_cross_scope_memory,
+            )
+            if memory_text:
+                context_text = (
+                    f"{context_text}\n\n---\n\n{memory_text}" if context_text else memory_text
+                )
+
+        return context_text
+
+    def _collectSelectionContext(self, *, selection_text: str | None) -> str:
+        """Collect context from the current text selection."""
+
+        if not selection_text or not selection_text.strip():
+            return "No text is currently selected in the editor."
+
+        clean_text = selection_text.strip()
+        self._record_audit(
+            None,
+            "context.collect.selection",
+            summary=f"Collected {len(clean_text)} characters from selection",
+            level="info",
+        )
+        return clean_text
+
+    def _collectCurrentDocumentContext(self, *, max_length: int | None) -> str:
+        """Collect context from the current active document."""
+
+        current_doc = self.getCurrentDocument()
+        if current_doc is None:
+            return "No document is currently active."
+
+        limit = max_length if isinstance(max_length, int) and max_length > 0 else 50_000
+        doc_text = self.getDocText(current_doc.handle)
+        truncated = len(doc_text) > limit
+        if truncated:
+            doc_text = doc_text[:limit]
+
+        self._record_audit(
+            None,
+            "context.collect.document",
+            target=current_doc.handle,
+            summary=f"Collected {len(doc_text)} characters from document '{current_doc.name}'",
+            level="info",
+        )
+
+        if truncated:
+            doc_text = f"{doc_text}\n\n[Content truncated due to length limit]"
+
+        return f"# Document: {current_doc.name}\n\n{doc_text}"
+
+    def _collectOutlineContext(self, *, max_length: int | None) -> str:
+        """Collect context from the project outline structure."""
+
+        limit = max_length if isinstance(max_length, int) and max_length > 0 else 20_000
+        project_meta = self.getProjectMeta()
+        outline_parts = [
+            "# Project Outline",
+            f"Project: {project_meta.get('name', 'Unnamed')}",
+            f"Author: {project_meta.get('author', 'Unknown')}",
+            f"Language: {project_meta.get('language', 'en')}",
+            f"Total Words: {project_meta.get('totalWords', 0)}",
+            "",
+            "## Structure",
+        ]
+
+        try:
+            outline_refs = self.listDocuments("outline")
+        except Exception as exc:  # pragma: no cover - defensive logging
+            outline_parts.append(f"[Error collecting outline: {exc}]")
+            outline_text = "\n".join(outline_parts)
+            return outline_text[:limit] + (
+                "\n\n[Outline truncated due to length limit]"
+                if len(outline_text) > limit
+                else ""
+            )
+
+        tree = self._project.tree
+        for ref in outline_refs:
+            item = tree[ref.handle]
+            if item is None:
+                outline_parts.append(f"### {ref.name}")
+                outline_parts.append("[Content unavailable]")
+                outline_parts.append("")
+                continue
+
+            depth = 0
+            node = tree.nodes.get(ref.handle)
+            parent_node = node.parent() if node is not None else None
+            while parent_node and parent_node.item.itemClass in {nwItemClass.PLOT, nwItemClass.TIMELINE}:
+                depth += 1
+                parent_node = parent_node.parent()
+
+            indent = "    " * depth
+            outline_parts.append(f"{indent}- {ref.name}")
+
+            try:
+                doc_text = self.getDocText(ref.handle)
+            except NWAiApiError:
+                outline_parts.append(f"{indent}  [Content unavailable]")
+                outline_parts.append("")
+                continue
+
+            summary_lines = [line.strip() for line in doc_text.splitlines() if line.strip()]
+            preview = summary_lines[0] if summary_lines else doc_text.strip()
+            if preview and len(preview) > 500:
+                preview = preview[:500].rstrip() + "..."
+            if preview:
+                outline_parts.append(f"{indent}  {preview}")
+            outline_parts.append("")
+
+        outline_text = "\n".join(outline_parts)
+        if len(outline_text) > limit:
+            outline_text = outline_text[:limit] + "\n\n[Outline truncated due to length limit]"
+
+        self._record_audit(
+            None,
+            "context.collect.outline",
+            summary=f"Collected outline context ({len(outline_text)} characters)",
+            level="info",
+        )
+        return outline_text
+
+    def _collectProjectContext(self, *, max_length: int | None) -> str:
+        """Collect context from the entire project with sensible limits."""
+
+        limit = max_length if isinstance(max_length, int) and max_length > 0 else 100_000
+        project_meta = self.getProjectMeta()
+        context_parts = [
+            "# Complete Project Context",
+            f"Project: {project_meta.get('name', 'Unnamed')}",
+            f"Author: {project_meta.get('author', 'Unknown')}",
+            f"Total Words: {project_meta.get('totalWords', 0)}",
+            "",
+        ]
+
+        def append_section(header: str) -> None:
+            context_parts.append(header)
+            context_parts.append("")
+
+        try:
+            novel_docs = self.listDocuments("novel")
+        except Exception as exc:  # pragma: no cover - defensive logging
+            context_parts.append(f"[Error collecting project context: {exc}]")
+            novel_docs = []
+
+        if novel_docs:
+            append_section("## Novel Content")
+            for ref in novel_docs:
+                try:
+                    doc_text = self.getDocText(ref.handle)
+                except NWAiApiError:
+                    context_parts.append(f"### {ref.name}")
+                    context_parts.append("[Content unavailable]")
+                    context_parts.append("")
+                    continue
+
+                body = doc_text if len(doc_text) <= limit else f"{doc_text[:limit]}..."
+                context_parts.append(f"### {ref.name}")
+                context_parts.append("")
+                context_parts.append(body)
+                context_parts.append("")
+
+        secondary_scopes = ("character", "world", "plot")
+        for scope in secondary_scopes:
+            try:
+                scoped_docs = self.listDocuments(scope)
+            except NWAiApiError:
+                continue
+            if not scoped_docs:
+                continue
+
+            append_section(f"## {scope.title()} Notes")
+            for ref in scoped_docs[:5]:
+                try:
+                    doc_text = self.getDocText(ref.handle)
+                except NWAiApiError:
+                    continue
+                preview = doc_text if len(doc_text) <= 1000 else f"{doc_text[:1000]}..."
+                context_parts.append(f"### {ref.name}")
+                context_parts.append(preview)
+                context_parts.append("")
+
+        project_text = "\n".join(context_parts).strip()
+        if len(project_text) > limit:
+            project_text = (
+                f"{project_text[:limit]}\n\n[Project context truncated due to length limit. "
+                "Use more specific context scopes for complete content.]"
+            )
+
+        self._record_audit(
+            None,
+            "context.collect.project",
+            summary=f"Collected project context ({len(project_text)} characters)",
+            level="info",
+        )
+        return project_text
+
+    def _format_memory_context(
+        self,
+        scope: str,
+        *,
+        max_turns: int,
+        include_cross_scope: bool,
+    ) -> str:
+        """Format conversation memory into a textual snippet."""
+
+        if max_turns <= 0:
+            return ""
+
+        turns = self._conversation_memory.get_relevant_context(
+            scope,
+            max_turns=max_turns,
+            include_cross_scope=include_cross_scope,
+        )
+        if not turns:
+            return ""
+
+        lines: list[str] = ["# Conversation Memory"]
+        for index, turn in enumerate(reversed(turns), start=1):
+            timestamp = turn.timestamp.isoformat()
+            lines.append(f"## Turn {index} ({turn.context_scope}, {timestamp})")
+            if turn.context_summary:
+                lines.append(f"Context Summary: {turn.context_summary}")
+            lines.append("User:")
+            lines.append(turn.user_input or "[empty input]")
+            if turn.ai_response:
+                lines.append("AI:")
+                lines.append(turn.ai_response)
+            lines.append("")
+        return "\n".join(lines).strip()
+
+    def getConversationMemory(self) -> ConversationMemory:
+        """Expose the conversation memory manager for the current session."""
+
+        return self._conversation_memory
+
+    def logConversationTurn(
+        self,
+        user_input: str,
+        ai_response: str,
+        *,
+        context_scope: str = "current_document",
+        context_summary: str = "",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> ConversationTurn:
+        """Store a new conversation turn and record it in the audit trail."""
+
+        scope_key = (context_scope or "current_document").strip().lower()
+        if scope_key not in _CONTEXT_SCOPES:
+            raise NWAiApiError(
+                f"Invalid conversation scope '{context_scope}'. Valid scopes: {', '.join(_CONTEXT_SCOPES)}",
+            )
+
+        turn = self._conversation_memory.add_turn(
+            user_input=user_input,
+            ai_response=ai_response,
+            context_scope=scope_key,
+            context_summary=context_summary,
+            metadata=metadata,
+        )
+        self._record_audit(
+            None,
+            "conversation.turn.recorded",
+            summary=f"Recorded conversation turn {turn.turn_id} (scope={scope_key})",
+            level="info",
+        )
+        return turn
+
+    def getConversationHistory(
+        self,
+        scope: str = "current_document",
+        *,
+        max_turns: int = 5,
+        include_cross_scope: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Return recent conversation turns relevant to the requested scope."""
+
+        scope_key = (scope or "current_document").strip().lower()
+        if scope_key not in _CONTEXT_SCOPES:
+            raise NWAiApiError(
+                f"Invalid conversation scope '{scope}'. Valid scopes: {', '.join(_CONTEXT_SCOPES)}",
+            )
+
+        turns = self._conversation_memory.get_relevant_context(
+            scope_key,
+            max_turns=max_turns,
+            include_cross_scope=include_cross_scope,
+        )
+        return [turn.to_dict() for turn in turns]
+
+    def clearConversationMemory(self) -> None:
+        """Reset the stored conversation memory."""
+
+        previous_session = self._conversation_memory.session_id
+        self._conversation_memory.clear_memory()
+        self._record_audit(
+            None,
+            "conversation.memory.cleared",
+            summary=f"Conversation memory reset (previous session {previous_session})",
+            level="info",
+        )
 
     def search(self, query: str, scope: str = "document", limit: int = 50) -> list[str]:
         """Search within project resources on behalf of the AI Copilot."""

@@ -1,0 +1,17 @@
+story: "2.2.flexible-context-selection"
+result: "PASS"
+reviewer: "Quinn (QA)"
+reviewer_role: "Test Architect & Quality Advisor"
+reviewed_at: "2025-09-17T23:36:39+08:00"
+summary:
+  - "Copilot Dock 暴露上下文范围选择器并在启用状态下发射 contextScopeChanged 信号（novelwriter/extensions/ai_copilot/dock.py:26）。"
+  - "NWAiApi.collectContext 支持四类范围并可拼接会话记忆；新增 ConversationMemory 提供基础对话存储（novelwriter/ai/api.py:652）。"
+risks:
+  - "上下文选择器尚未与实际 AI 请求流程联动；会话记忆仅保存在内存队列，后续需规划持久化/清理策略。"
+tests:
+  - name: "Context Scopes"
+    command: "QT_QPA_PLATFORM=offscreen pytest tests/test_ai/test_context_selection.py"
+    result: "pass"
+  - name: "Copilot UI"
+    command: "QT_QPA_PLATFORM=offscreen pytest tests/test_gui/test_gui_ai_copilot.py"
+    result: "pass"
