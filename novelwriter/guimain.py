@@ -46,6 +46,7 @@ from novelwriter.dialogs.projectsettings import GuiProjectSettings
 from novelwriter.dialogs.wordlist import GuiWordList
 from novelwriter.enum import nwDocAction, nwDocInsert, nwDocMode, nwFocus, nwItemType, nwView
 from novelwriter.extensions.progressbars import NProgressSimple
+from novelwriter.extensions.ai_copilot import MainWindowIntegration
 from novelwriter.gui.doceditor import GuiDocEditor
 from novelwriter.gui.docviewer import GuiDocViewer
 from novelwriter.gui.docviewerpanel import GuiDocViewerPanel
@@ -206,6 +207,8 @@ class GuiMain(QMainWindow):
         self.setCentralWidget(self.mainWidget)
         self.setStatusBar(self.mainStatus)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)  # Issue #1147
+
+        MainWindowIntegration.integrate_ai_dock(self)
 
         # Connect Signals
         # ===============
@@ -908,6 +911,9 @@ class GuiMain(QMainWindow):
         self.outlineView.updateTheme()
         self.itemDetails.updateTheme()
         self.mainStatus.updateTheme()
+        dock = getattr(self, "_ai_copilot_dock", None)
+        if dock is not None and hasattr(dock, "updateTheme"):
+            dock.updateTheme()
         SHARED.project.tree.refreshAllItems()
 
         if syntax:
