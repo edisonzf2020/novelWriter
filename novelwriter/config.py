@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 
     from novelwriter.core.projectdata import NWProjectData
     from novelwriter.splash import NSplashScreen
+    from novelwriter.ai.config import AIConfig
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,50 @@ DEF_GUI_LIGHT = "default_light"
 DEF_ICONS = "material_rounded_normal"
 DEF_TREECOL = "theme"
 
+
+
+
+class _DisabledAIConfig:
+    """Fallback AI config object used when AI modules are unavailable."""
+
+    __slots__ = (
+        "enabled",
+        "provider",
+        "model",
+        "openai_base_url",
+        "api_key",
+        "timeout",
+        "max_tokens",
+        "dry_run_default",
+        "ask_before_apply",
+        "api_key_from_env",
+        "_reason",
+    )
+
+    def __init__(self, reason: str | None = None) -> None:
+        self.enabled = False
+        self.provider = "disabled"
+        self.model = ""
+        self.openai_base_url = ""
+        self.api_key = ""
+        self.timeout = 30
+        self.max_tokens = 0
+        self.dry_run_default = True
+        self.ask_before_apply = True
+        self.api_key_from_env = False
+        self._reason = reason
+
+    def load_from_main_config(self, *_: object, **__: object) -> None:
+        """No-op loader for disabled AI configuration."""
+
+    def save_to_main_config(self, *_: object, **__: object) -> None:
+        """No-op saver for disabled AI configuration."""
+
+    @property
+    def availability_reason(self) -> str | None:
+        """Optional hint describing why AI is disabled."""
+
+        return self._reason
 
 class Config:
     """User Config.
@@ -75,7 +120,7 @@ class Config:
         "_appPath", "_appRoot", "_backPath", "_backupPath", "_confPath", "_dLocale", "_dShortDate",
         "_dShortDateTime", "_dataPath", "_errData", "_hasError", "_homePath", "_lastAuthor",
         "_manuals", "_nwLangPath", "_qLocale", "_qtLangPath", "_qtTrans", "_recentPaths",
-        "_recentProjects", "_splash", "allowOpenDial", "altDialogClose", "altDialogOpen",
+        "_recentProjects", "_ai_config", "_splash", "allowOpenDial", "altDialogClose", "altDialogOpen",
         "appHandle", "appName", "askBeforeBackup", "askBeforeExit", "autoSaveDoc", "autoSaveProj",
         "autoScroll", "autoScrollPos", "autoSelect", "backupOnClose", "cursorWidth", "darkTheme",
         "dialogLine", "dialogStyle", "doJustify", "doReplace", "doReplaceDQuote", "doReplaceDash",
@@ -105,6 +150,7 @@ class Config:
         # ==============
 
         self._splash = None
+        self._ai_config = None
 
         # Set Application Variables
         self.appName   = "novelWriter"
@@ -591,6 +637,21 @@ class Config:
                         nwApp.installTranslator(qTrans)
                         self._qtTrans[lngFile] = qTrans
 
+
+    @property
+    def ai(self) -> "AIConfig | _DisabledAIConfig":
+        """Lazily instantiate and cache the AI configuration adapter."""
+
+        if self._ai_config is None:
+            try:
+                from novelwriter.ai.config import AIConfig
+
+                self._ai_config = AIConfig()
+            except Exception as exc:  # pragma: no cover - defensive path
+                logger.warning("AI configuration unavailable: %s", exc)
+                self._ai_config = _DisabledAIConfig(str(exc))
+        return self._ai_config
+
     def loadConfig(self, splash: NSplashScreen | None = None) -> bool:
         """Load preferences from file and replace default settings."""
         self._splash = splash
@@ -736,6 +797,14 @@ class Config:
         self.narratorBreak = narratorBreak if narratorBreak in nwQuotes.DASHES else ""
         self.narratorDialog = narratorDialog if narratorDialog in nwQuotes.DASHES else ""
 
+        try:
+            ai_config = self.ai
+            loader = getattr(ai_config, "load_from_main_config", None)
+            if callable(loader):
+                loader(conf)
+        except Exception as exc:  # pragma: no cover - log-only path
+            logger.warning("Failed to load AI configuration: %s", exc)
+
         return True
 
     def saveConfig(self) -> bool:
@@ -845,6 +914,14 @@ class Config:
             "searchprojword":  str(self.searchProjWord),
             "searchprojregex": str(self.searchProjRegEx),
         }
+
+        try:
+            ai_config = self.ai
+            saver = getattr(ai_config, "save_to_main_config", None)
+            if callable(saver):
+                saver(conf)
+        except Exception as exc:  # pragma: no cover - log-only path
+            logger.warning("Failed to save AI configuration: %s", exc)
 
         # Write config file
         cnfPath = self._confPath / nwFiles.CONF_FILE

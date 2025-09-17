@@ -40,8 +40,7 @@ class AICopilotDock(QDockWidget):
         self._availability_reason: str | None = None
 
         self._setupPlaceholder()
-        self._ai_available, self._availability_reason = self._resolve_availability()
-        self._applyTranslations()
+        self.refresh_from_config()
 
     ##
     #  Qt Events
@@ -85,6 +84,12 @@ class AICopilotDock(QDockWidget):
         container.setLayout(layout)
         self.setWidget(container)
 
+    def refresh_from_config(self) -> None:
+        """Refresh availability and messaging from the shared configuration."""
+
+        self._ai_available, self._availability_reason = self._resolve_availability()
+        self.updateTheme()
+
     def updateTheme(self) -> None:
         """Update fonts and colours to match the current theme."""
         theme = SHARED.theme
@@ -117,9 +122,13 @@ class AICopilotDock(QDockWidget):
         if ai_config is None:
             return False, self.tr("AI configuration is not enabled yet. Enable AI options in Preferences.")
 
-        enabled = getattr(ai_config, "enabled", None)
-        if enabled is False:
-            return False, self.tr("AI features are disabled in the preferences.")
+        enabled = bool(getattr(ai_config, "enabled", False))
+        if not enabled:
+            reason = getattr(ai_config, "availability_reason", None)
+            return False, reason or self.tr("AI features are disabled in the preferences.")
+
+        if not getattr(ai_config, "api_key", "") and not getattr(ai_config, "api_key_from_env", False):
+            return False, self.tr("Configure an AI API key in Preferences to enable the Copilot.")
 
         try:
             importlib.import_module("novelwriter.ai")

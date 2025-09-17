@@ -29,7 +29,7 @@ import logging
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QCloseEvent, QKeyEvent, QKeySequence
 from PyQt6.QtWidgets import (
-    QCompleter, QDialogButtonBox, QFileDialog, QHBoxLayout, QLineEdit, QMenu,
+    QCompleter, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMenu,
     QPushButton, QVBoxLayout, QWidget
 )
 
@@ -851,6 +851,133 @@ class GuiPreferences(NDialog):
             button=self.btnDQuoteClose
         )
 
+        # AI Preferences
+        # ==============
+
+        ai_config = CONFIG.ai
+
+        self.sidebar.addLabel(self.tr("AI"))
+
+        title = self.tr("AI Configuration")
+        section += 1
+        self.sidebar.addButton(title, section)
+        self.mainForm.addGroupLabel(title, section)
+
+        self.aiEnabled = NSwitch(self)
+        self.aiEnabled.setObjectName("aiEnabledSwitch")
+        self.aiEnabled.setChecked(bool(getattr(ai_config, "enabled", False)))
+        self.aiEnabled.toggled.connect(self._update_ai_controls)
+        self.mainForm.addRow(
+            self.tr("Enable AI Copilot"), self.aiEnabled,
+            self.tr("Turn on to expose AI-assisted features in the UI."),
+        )
+
+        self.aiDisabledMessage = NColorLabel(
+            self.tr("AI Copilot is disabled. Enable the switch above to configure providers."),
+            self,
+            color=SHARED.theme.errorText,
+            wrap=True,
+        )
+        self.aiDisabledMessage.setObjectName("aiDisabledMessage")
+        self.mainForm.addRow(None, self.aiDisabledMessage)
+
+        self.aiProvider = NComboBox(self)
+        self.aiProvider.setObjectName("aiProviderCombo")
+        self.aiProvider.setMinimumWidth(220)
+        provider_options = [
+            (self.tr("OpenAI Compatible"), "openai"),
+        ]
+        seen_values = {value for _, value in provider_options}
+        provider_current = getattr(ai_config, "provider", "openai")
+        if provider_current not in seen_values:
+            provider_options.append((provider_current.title(), provider_current))
+        for label, value in provider_options:
+            self.aiProvider.addItem(label, value)
+        self.aiProvider.setCurrentData(provider_current, "openai")
+        self.mainForm.addRow(
+            self.tr("Provider"), self.aiProvider,
+            self.tr("Select the AI provider or compatibility mode."), stretch=(3, 2)
+        )
+
+        self.aiBaseUrl = QLineEdit(self)
+        self.aiBaseUrl.setObjectName("aiBaseUrlEdit")
+        self.aiBaseUrl.setMinimumWidth(260)
+        self.aiBaseUrl.setPlaceholderText("https://api.openai.com/v1")
+        self.aiBaseUrl.setText(getattr(ai_config, "openai_base_url", ""))
+        self.mainForm.addRow(
+            self.tr("Base URL"), self.aiBaseUrl,
+            self.tr("Override the REST endpoint when using compatible services."), stretch=(3, 2)
+        )
+
+        self.aiTimeout = NSpinBox(self)
+        self.aiTimeout.setObjectName("aiTimeoutSpin")
+        self.aiTimeout.setMinimum(5)
+        self.aiTimeout.setMaximum(600)
+        self.aiTimeout.setSingleStep(5)
+        self.aiTimeout.setValue(getattr(ai_config, "timeout", 30))
+        self.mainForm.addRow(
+            self.tr("Request timeout"), self.aiTimeout,
+            self.tr("Abort network calls after the specified number of seconds."), unit=self.tr("seconds")
+        )
+
+        self.aiMaxTokens = NSpinBox(self)
+        self.aiMaxTokens.setObjectName("aiMaxTokensSpin")
+        self.aiMaxTokens.setMinimum(256)
+        self.aiMaxTokens.setMaximum(32768)
+        self.aiMaxTokens.setSingleStep(256)
+        self.aiMaxTokens.setValue(getattr(ai_config, "max_tokens", 2048))
+        self.mainForm.addRow(
+            self.tr("Maximum tokens"), self.aiMaxTokens,
+            self.tr("Upper limit for generated tokens per request."),
+        )
+
+        self.aiDryRunDefault = NSwitch(self)
+        self.aiDryRunDefault.setObjectName("aiDryRunSwitch")
+        self.aiDryRunDefault.setChecked(getattr(ai_config, "dry_run_default", True))
+        self.mainForm.addRow(
+            self.tr("Dry-run by default"), self.aiDryRunDefault,
+            self.tr("Start AI actions in preview mode, requiring manual confirmation."),
+        )
+
+        self.aiAskBeforeApply = NSwitch(self)
+        self.aiAskBeforeApply.setObjectName("aiAskBeforeApplySwitch")
+        self.aiAskBeforeApply.setChecked(getattr(ai_config, "ask_before_apply", True))
+        self.mainForm.addRow(
+            self.tr("Ask before applying changes"), self.aiAskBeforeApply,
+            self.tr("Always prompt before AI changes affect documents."),
+        )
+
+        self.aiApiKey = QLineEdit(self)
+        self.aiApiKey.setObjectName("aiApiKeyEdit")
+        self.aiApiKey.setEchoMode(QLineEdit.EchoMode.Password)
+        self.aiApiKey.setMinimumWidth(260)
+        self.aiApiKeyEnvOverride = bool(getattr(ai_config, "api_key_from_env", False))
+        if self.aiApiKeyEnvOverride:
+            self.aiApiKey.setPlaceholderText(
+                self.tr("Using OPENAI_API_KEY from the environment; stored key is ignored.")
+            )
+            self.aiApiKey.setReadOnly(True)
+        else:
+            self.aiApiKey.setText(getattr(ai_config, "api_key", ""))
+        self.mainForm.addRow(
+            self.tr("API key"), self.aiApiKey,
+            self.tr("The secret token used to authenticate API requests."), stretch=(3, 2)
+        )
+
+        self.aiEnvInfo = NColorLabel(
+            self.tr(
+                "Environment variables take precedence over stored keys."
+                " Set OPENAI_API_KEY to avoid saving credentials to disk."
+            ),
+            self,
+            color=SHARED.theme.helpText,
+            wrap=True,
+        )
+        self.aiEnvInfo.setObjectName("aiEnvInfoLabel")
+        self.mainForm.addRow(None, self.aiEnvInfo)
+
+        self._update_ai_controls(self.aiEnabled.isChecked())
+
         self.mainForm.finalise()
         self.sidebar.setSelected(1)
 
@@ -927,6 +1054,24 @@ class GuiPreferences(NDialog):
         current = self.dialogLine.text()
         values = processDialogSymbols(f"{current} {symbol}")
         self.dialogLine.setText(" ".join(values))
+
+    def _update_ai_controls(self, state: bool) -> None:
+        """Enable or disable AI configuration inputs based on switch state."""
+
+        enabled = bool(state)
+        controls = [
+            self.aiProvider,
+            self.aiBaseUrl,
+            self.aiTimeout,
+            self.aiMaxTokens,
+            self.aiDryRunDefault,
+            self.aiAskBeforeApply,
+        ]
+        for widget in controls:
+            widget.setEnabled(enabled)
+
+        self.aiApiKey.setEnabled(enabled and not self.aiApiKeyEnvOverride)
+        self.aiDisabledMessage.setVisible(not enabled)
 
     @pyqtSlot(bool)
     def _toggleAutoReplaceMain(self, state: bool) -> None:
@@ -1110,8 +1255,31 @@ class GuiPreferences(NDialog):
         CONFIG.fmtDQuoteOpen  = self.fmtDQuoteOpen.text()
         CONFIG.fmtDQuoteClose = self.fmtDQuoteClose.text()
 
+        # AI Configuration
+        ai_config = CONFIG.ai
+        ai_config.enabled = self.aiEnabled.isChecked()
+        ai_config.provider = self.aiProvider.currentData() or ai_config.provider
+        base_url = self.aiBaseUrl.text().strip()
+        ai_config.openai_base_url = base_url or "https://api.openai.com/v1"
+        ai_config.timeout = self.aiTimeout.value()
+        ai_config.max_tokens = self.aiMaxTokens.value()
+        ai_config.dry_run_default = self.aiDryRunDefault.isChecked()
+        ai_config.ask_before_apply = self.aiAskBeforeApply.isChecked()
+        if not self.aiApiKeyEnvOverride:
+            ai_config.api_key = self.aiApiKey.text().strip()
+
         # Finalise
         CONFIG.saveConfig()
+
+        try:
+            from novelwriter.extensions.ai_copilot.dock import AICopilotDock
+        except Exception:  # pragma: no cover - optional integration
+            pass
+        else:
+            dock = SHARED.findTopLevelWidget(AICopilotDock)
+            if dock is not None:
+                dock.refresh_from_config()
+
         self.newPreferencesReady.emit(needsRestart, refreshTree, updateTheme, updateSyntax)
 
         self.close()

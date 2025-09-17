@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 import pytest
 
 from novelwriter.ai import (
@@ -15,6 +17,9 @@ from novelwriter.ai import (
     Suggestion,
     TextRange,
 )
+
+if TYPE_CHECKING:
+    from novelwriter.core.project import NWProject
 
 
 def test_ai_models_can_be_instantiated() -> None:
@@ -45,7 +50,7 @@ def test_error_hierarchy_is_available(error_type: type[BaseException]) -> None:
 def test_transaction_methods_are_not_implemented_yet() -> None:
     """Placeholder transaction helpers should still raise until implemented."""
 
-    api = NWAiApi(project=object())
+    api = NWAiApi(project=cast("NWProject", object()))
 
     with pytest.raises(NotImplementedError):
         api.begin_transaction()
