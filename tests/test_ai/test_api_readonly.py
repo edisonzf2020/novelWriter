@@ -2,15 +2,36 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from types import MappingProxyType
+from typing import cast
 
+import httpx
 import pytest
 
+from novelwriter import CONFIG
 from novelwriter.ai import DocumentRef, NWAiApi, NWAiApiError
+from novelwriter.ai.config import AIConfig
+from novelwriter.ai.providers import OpenAICompatibleProvider, ProviderSettings
 from novelwriter.core.project import NWProject
 from novelwriter.enum import nwItemClass
 
 from tests.tools import buildTestProject
+
+
+@pytest.fixture()
+def patched_ai_config():
+    original = getattr(CONFIG, "_ai_config", None)
+    cfg = AIConfig()
+    CONFIG._ai_config = cfg
+    try:
+        yield cfg
+    finally:
+        if original is None:
+            if hasattr(CONFIG, "_ai_config"):
+                delattr(CONFIG, "_ai_config")
+        else:
+            CONFIG._ai_config = original
 
 
 @pytest.fixture()
@@ -60,6 +81,7 @@ def test_get_project_meta_returns_read_only_mapping(api_with_project) -> None:
 
     with pytest.raises(TypeError):
         meta["uuid"] = "override"  # type: ignore[misc]
+
 
 
 def test_list_documents_filters_scope(api_with_project) -> None:
@@ -140,3 +162,71 @@ def test_get_doc_text_raises_for_invalid_or_inactive_handles(api_with_project) -
     project.tree[handles["note"]].setActive(False)
     with pytest.raises(NWAiApiError):
         api.getDocText(handles["note"])
+
+
+def test_get_provider_capabilities_returns_snapshot(
+    patched_ai_config: AIConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patched_ai_config.enabled = True
+    patched_ai_config.api_key = "token"
+    patched_ai_config.model = "test-model"
+
+    call_counter: Counter[str] = Counter()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        call_counter[path] += 1
+        if path == "/v1/responses":
+            return httpx.Response(200, json={"id": "resp", "usage": {"output_tokens": 2}})
+        if path == "/v1/chat/completions":
+            return httpx.Response(200, json={"id": "chat", "usage": {"completion_tokens": 1}})
+        if path == "/v1/models/test-model":
+            return httpx.Response(200, json={"id": "test-model", "output_token_limit": 512})
+        raise AssertionError(f"Unexpected path {path}")
+
+    transport = httpx.MockTransport(handler)
+    settings = ProviderSettings(
+        base_url="https://mock.local",
+        api_key="token",
+        model="test-model",
+        transport=transport,
+    )
+    provider = OpenAICompatibleProvider(settings)
+
+    def _fake_create_provider(self, *, transport=None):
+        return provider
+
+    monkeypatch.setattr(AIConfig, "create_provider", _fake_create_provider, raising=True)
+
+
+    patched_ai_config.set_availability_reason("stale")
+
+    api = NWAiApi(cast("NWProject", object()))
+
+    snapshot = api.getProviderCapabilities()
+    assert snapshot.supports_responses is True
+    assert patched_ai_config.availability_reason is None
+
+    summary = api.getProviderCapabilitiesSummary()
+    assert summary["preferred_endpoint"] == "responses"
+
+    refreshed = api.getProviderCapabilities(refresh=True)
+    assert refreshed.supports_responses is True
+    assert call_counter["/v1/responses"] == 2
+
+    api.resetProvider()
+    assert provider._client is None  # type: ignore[attr-defined]
+
+
+def test_get_provider_capabilities_disabled_sets_reason(
+    patched_ai_config: AIConfig,
+) -> None:
+    patched_ai_config.enabled = False
+
+    api = NWAiApi(cast("NWProject", object()))
+
+    with pytest.raises(NWAiApiError):
+        api.getProviderCapabilities()
+
+    assert patched_ai_config.availability_reason is not None

@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import difflib
+import logging
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from threading import RLock
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional
 from types import MappingProxyType
 from uuid import uuid4
 
 from novelwriter import CONFIG
+
+logger = logging.getLogger(__name__)
 from novelwriter.enum import nwItemClass, nwItemLayout
 
-from .errors import NWAiApiError
-from .models import BuildResult, DocumentRef, Suggestion, TextRange
+from .errors import NWAiApiError, NWAiConfigError
 from .memory import ConversationMemory, ConversationTurn
+from .models import BuildResult, DocumentRef, Suggestion, TextRange
+from .providers import ProviderCapabilities
 
 __all__ = ["NWAiApi"]
 
@@ -98,6 +103,7 @@ _SCOPE_LAYOUT_MAP: Mapping[str, nwItemLayout] = MappingProxyType(
 )
 
 if TYPE_CHECKING:  # pragma: no cover - hints only
+    from novelwriter.ai.providers.base import BaseProvider
     from novelwriter.core.project import NWProject
 
 
@@ -112,6 +118,59 @@ class NWAiApi:
         self._audit_log: deque[_AuditRecord] = deque(maxlen=_AUDIT_LOG_LIMIT)
         self._pending_suggestions: dict[str, dict[str, Any]] = {}
         self._conversation_memory = ConversationMemory()
+        self._provider_lock = RLock()
+        self._provider: "BaseProvider" | None = None
+
+    # ------------------------------------------------------------------
+    # Provider management
+    # ------------------------------------------------------------------
+    def getProviderCapabilities(self, *, refresh: bool = False) -> ProviderCapabilities:
+        """Return cached provider capabilities, refreshing when requested."""
+
+        provider = self._ensure_provider()
+        if refresh:
+            return provider.refresh_capabilities()
+        return provider.ensure_capabilities()
+
+    def getProviderCapabilitiesSummary(self, *, refresh: bool = False) -> dict[str, Any]:
+        """Return a serialisable snapshot of the provider capabilities."""
+
+        snapshot = self.getProviderCapabilities(refresh=refresh)
+        return snapshot.as_dict()
+
+    def resetProvider(self) -> None:
+        """Dispose of the cached provider instance."""
+
+        with self._provider_lock:
+            if self._provider is not None:
+                try:
+                    logger.debug("Resetting AI provider instance")
+                    self._provider.close()
+                finally:
+                    self._provider = None
+
+    def _ensure_provider(self) -> "BaseProvider":
+        ai_config = getattr(CONFIG, "ai", None)
+        if ai_config is None:
+            raise NWAiApiError("AI configuration is not available.")
+        if not getattr(ai_config, "enabled", False):
+            ai_config.set_availability_reason("AI features are disabled in the preferences.")
+            raise NWAiApiError("AI provider support is disabled.")
+
+        with self._provider_lock:
+            if self._provider is not None:
+                return self._provider
+
+            try:
+                provider = ai_config.create_provider()
+            except NWAiConfigError as exc:
+                ai_config.set_availability_reason(str(exc))
+                raise NWAiApiError(str(exc)) from exc
+
+            ai_config.set_availability_reason(None)
+            self._provider = provider
+            logger.debug("AI provider '%s' instantiated", ai_config.provider)
+            return provider
 
     # ------------------------------------------------------------------
     # Transaction and auditing

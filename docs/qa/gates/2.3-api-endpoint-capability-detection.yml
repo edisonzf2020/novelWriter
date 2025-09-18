@@ -1,0 +1,14 @@
+story: "2.3.api-endpoint-capability-detection"
+result: "FAIL"
+reviewer: "Quinn (QA)"
+reviewer_role: "Test Architect & Quality Advisor"
+reviewed_at: "2025-09-18T10:39:11+08:00"
+summary:
+  - "OpenAI 兼容 Provider 依赖 httpx，但项目发布依赖中未声明；默认安装环境导入 novelwriter.ai 时即因缺失 httpx 抛错，能力检测无法运行（pyproject.toml 缺少 httpx，novelwriter/ai/providers/openai_compatible.py:11）。"
+  - "检测流程及缓存机制在测试中表现正常，但当前缺陷阻塞真实环境使用；需先补齐依赖或改为延迟可选加载。"
+risks:
+  - "人工安装 httpx 虽可暂时绕过，但缺乏版本约束与文档，后续流式/工具功能可能因环境差异不稳定。"
+tests:
+  - name: "Provider Capability Suite"
+    command: "pytest tests/test_ai/test_providers.py tests/test_ai/test_api_readonly.py tests/test_ai/test_ai_config.py"
+    result: "pass"

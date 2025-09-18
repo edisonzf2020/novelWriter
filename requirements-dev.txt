@@ -2,3 +2,4 @@ build
 isort
 pyright
 ruff
+httpx>=0.28,<0.29
