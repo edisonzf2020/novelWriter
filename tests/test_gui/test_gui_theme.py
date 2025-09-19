@@ -436,8 +436,9 @@ def testGuiTheme_LoadIcons():
     qPix = iconCache.getPixmap("add", (50, 50))
     assert isinstance(qPix, QPixmap)
     assert qPix.isNull() is False
-    assert qPix.width() == 50, "If this fails, make sure QT_SCALE_FACTOR=1"
-    assert qPix.height() == 50, "If this fails, make sure QT_SCALE_FACTOR=1"
+    dpr = qPix.devicePixelRatio() or 1
+    assert qPix.width() / dpr == 50
+    assert qPix.height() / dpr == 50
 
     # Load app icon
     qIcon = iconCache.getIcon("novelwriter")

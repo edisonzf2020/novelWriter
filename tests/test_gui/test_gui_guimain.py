@@ -720,11 +720,18 @@ def testGuiMain_Features(qtbot, monkeypatch, nwGUI, projPath, mockRnd):
     # Focus Mode
     # ==========
 
+    def _assert_menu_visible(expected: bool) -> None:
+        if nwGUI.mainMenu.isNativeMenuBar():
+            assert CONFIG.osDarwin is True
+            if expected:
+                return
+        assert nwGUI.mainMenu.isVisible() is expected
+
     # No document open, so not allowing focus mode
     nwGUI.toggleFocusMode()
     assert nwGUI.treePane.isVisible() is True
     assert nwGUI.mainStatus.isVisible() is True
-    assert nwGUI.mainMenu.isVisible() is True
+    _assert_menu_visible(True)
     assert nwGUI.sideBar.isVisible() is True
 
     # Open a file in editor and viewer
@@ -736,7 +743,7 @@ def testGuiMain_Features(qtbot, monkeypatch, nwGUI, projPath, mockRnd):
     assert SHARED.focusMode is True
     assert nwGUI.treePane.isVisible() is False
     assert nwGUI.mainStatus.isVisible() is False
-    assert nwGUI.mainMenu.isVisible() is False
+    _assert_menu_visible(False)
     assert nwGUI.sideBar.isVisible() is False
     assert nwGUI.splitView.isVisible() is False
 
@@ -745,7 +752,7 @@ def testGuiMain_Features(qtbot, monkeypatch, nwGUI, projPath, mockRnd):
     assert SHARED.focusMode is False
     assert nwGUI.treePane.isVisible() is True
     assert nwGUI.mainStatus.isVisible() is True
-    assert nwGUI.mainMenu.isVisible() is True
+    _assert_menu_visible(True)
     assert nwGUI.sideBar.isVisible() is True
     assert nwGUI.splitView.isVisible() is True
 
