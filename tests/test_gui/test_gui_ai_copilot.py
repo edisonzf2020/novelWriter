@@ -25,7 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import QComboBox, QDockWidget, QLabel
+from PyQt6.QtWidgets import QComboBox, QDockWidget, QLabel, QPushButton, QStackedWidget
 
 from novelwriter import SHARED
 
@@ -47,12 +47,12 @@ def test_ai_copilot_dock_added_by_default(nwGUI):
     scope_selector = dock.findChild(QComboBox, "aiContextScopeSelector")
 
     assert status_label is not None
+    assert status_label.text() == dock.tr("AI Copilot is temporarily unavailable")
     assert message_label is not None
+    assert message_label.text() == dock.tr("AI features are disabled in the preferences.")
     assert scope_selector is not None
     assert scope_selector.count() == 4
     assert scope_selector.currentData() == "current_document"
-    assert status_label.text()  # Placeholder text should always be populated
-    assert message_label.text()  # Degradation notice or placeholder copy
 
 
 @pytest.mark.gui
@@ -114,40 +114,37 @@ def test_ai_copilot_dock_updates_with_theme_change(monkeypatch, nwGUI):
         dock.updateTheme()
 
 
-@pytest.mark.gui 
+@pytest.mark.gui
 def test_ai_copilot_dock_refresh_after_write_operations(monkeypatch, nwGUI):
-    """AI Copilot dock should remain functional after write operations are enabled."""
-    from types import SimpleNamespace
-    from unittest.mock import patch
-    
-    # Create mock configuration with write operations enabled
+    """When AI is enabled the interactive controls should be visible."""
+
     dummy_config = SimpleNamespace(
         ai=SimpleNamespace(
             enabled=True,
+            api_key="token",
+            api_key_from_env=False,
             dry_run_default=False,
-            ask_before_apply=True
+            ask_before_apply=True,
+            max_tokens=512,
+            timeout=30,
         )
     )
-    
+
     monkeypatch.setattr("novelwriter.extensions.ai_copilot.dock.CONFIG", dummy_config, raising=False)
-    
+
     dock = AICopilotDock(nwGUI)
-    
-    # Simulate refresh after configuration change
-    with patch.object(dock, 'refresh_from_config') as mock_refresh:
-        # This would normally be called after AI configuration changes
-        dock.refresh_from_config()
-        mock_refresh.assert_called_once()
-    
-    # Dock should still be functional and display appropriate status
-    status_label = dock.findChild(QLabel, "aiCopilotStatusLabel")
-    message_label = dock.findChild(QLabel, "aiCopilotMessageLabel")
-    
-    assert status_label is not None
-    assert message_label is not None
-    assert status_label.text()  # Should have status text
-    assert message_label.text()  # Should have message text
-    
+    stacked = dock.widget()
+    assert isinstance(stacked, QStackedWidget)
+    assert stacked.currentIndex() == dock._INTERACTIVE_INDEX  # type: ignore[attr-defined]
+
+    send_button = dock.findChild(QPushButton, "aiCopilotSendButton")
+    quick_rewrite = dock.findChild(QPushButton, "aiQuickAction_rewrite")
+
+    assert send_button is not None
+    assert quick_rewrite is not None
+    assert send_button.isEnabled()
+    assert quick_rewrite.isEnabled()
+
     dock.deleteLater()
 
 
@@ -196,4 +193,25 @@ def test_ai_copilot_set_context_scope_updates_selector(monkeypatch, nwGUI):
     dock.setContextScope("project")
     assert selector.currentData() == "project"
     assert dock.getCurrentScope() == "project"
+    dock.deleteLater()
+
+
+@pytest.mark.gui
+def test_ai_copilot_quick_actions_present(monkeypatch, nwGUI):
+    """Quick action buttons should be available when AI is enabled."""
+
+    dummy_config = SimpleNamespace(
+        ai=SimpleNamespace(enabled=True, api_key="token", api_key_from_env=False)
+    )
+    monkeypatch.setattr(
+        "novelwriter.extensions.ai_copilot.dock.CONFIG",
+        dummy_config,
+        raising=False,
+    )
+
+    dock = AICopilotDock(nwGUI)
+    for key in ("summarise", "continue", "rewrite"):
+        button = dock.findChild(QPushButton, f"aiQuickAction_{key}")
+        assert button is not None
+        assert button.isEnabled()
     dock.deleteLater()

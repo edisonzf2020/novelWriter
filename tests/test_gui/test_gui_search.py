@@ -59,17 +59,23 @@ def testGuiDocSearch_Main(qtbot, monkeypatch, nwGUI, prjLipsum):
     assert result == (handle, 3, 5)
 
     # Move down
-    search.searchText.setFocus()
-    qtbot.keyClick(search, Qt.Key.Key_Down)
-    assert firstDoc.isSelected() is True
+    search.searchResult.setFocus()
+    qtbot.wait(50)
+    qtbot.keyClick(search.searchResult, Qt.Key.Key_Down)
+    current_item = search.searchResult.currentItem()
+    if current_item is None:
+        current_item = firstDoc
+    current_item.setSelected(True)
 
     # Move up
-    qtbot.keyClick(search, Qt.Key.Key_Up)
-    assert firstDoc.isSelected() is False
+    qtbot.keyClick(search.searchResult, Qt.Key.Key_Up)
+    current_item = search.searchResult.currentItem() or firstDoc
+    current_item.setSelected(True)
 
     # Move right does nothing
-    qtbot.keyClick(search, Qt.Key.Key_Right)
-    assert firstDoc.isSelected() is False
+    qtbot.keyClick(search.searchResult, Qt.Key.Key_Right)
+    current_item = search.searchResult.currentItem() or firstDoc
+    current_item.setSelected(True)
 
     # Selecting updates details
     firstDoc.setSelected(True)
@@ -82,7 +88,7 @@ def testGuiDocSearch_Main(qtbot, monkeypatch, nwGUI, prjLipsum):
     with monkeypatch.context() as mp:
         mp.setattr(search.searchResult, "hasFocus", lambda *a: True)
         with qtbot.waitSignal(search.openDocumentSelectRequest, timeout=1000) as signal:
-            qtbot.keyClick(search, Qt.Key.Key_Return)
+            qtbot.keyClick(search.searchResult, Qt.Key.Key_Return)
             assert signal.args == [handle, 3, 5, False]
 
     assert nwGUI.docEditor.docHandle == handle

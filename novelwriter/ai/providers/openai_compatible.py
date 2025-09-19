@@ -6,11 +6,20 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
-
-import httpx
+from typing import Any, TYPE_CHECKING
 
 from novelwriter.ai.errors import NWAiProviderError
+
+try:  # Optional dependency (novelWriter[ai])
+    import httpx as _httpx  # type: ignore
+except ImportError as exc:  # pragma: no cover - optional dependency missing
+    _httpx = None
+    _HTTPX_IMPORT_ERROR = exc
+else:  # pragma: no branch - executed when dependency available
+    _HTTPX_IMPORT_ERROR = None
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    import httpx
 
 from .base import BaseProvider, ProviderCapabilities, ProviderSettings
 
@@ -21,7 +30,7 @@ _RESPONSES_ENDPOINT = "/v1/responses"
 _CHAT_COMPLETIONS_ENDPOINT = "/v1/chat/completions"
 _MODELS_ENDPOINT = "/v1/models/{model}"
 
-_DETECTION_TIMEOUT = httpx.Timeout(10.0)
+_DETECTION_TIMEOUT = _httpx.Timeout(10.0) if _httpx is not None else None
 _USER_AGENT = "novelWriter-AI-Provider/1.0"
 
 
@@ -42,8 +51,15 @@ class OpenAICompatibleProvider(BaseProvider):
     """Provider implementation for OpenAI compatible HTTP endpoints."""
 
     def __init__(self, settings: ProviderSettings) -> None:
+        if _httpx is None:
+            message = (
+                "OpenAI-compatible provider requires the optional dependency 'httpx'. "
+                "Install novelWriter[ai] to enable AI Copilot network access."
+            )
+            raise NWAiProviderError(message) from _HTTPX_IMPORT_ERROR
+
         super().__init__(settings)
-        self._client: httpx.Client | None = None
+        self._client: "httpx.Client | None" = None
 
     # ------------------------------------------------------------------
     # BaseProvider overrides
@@ -113,23 +129,23 @@ class OpenAICompatibleProvider(BaseProvider):
         stream: bool = False,
         tools: list[dict[str, Any]] | None = None,
         **kwargs: Any,
-    ) -> httpx.Response:
-        """Execute a generation request using the preferred endpoint.
-
-        This minimal implementation focuses on capability-driven endpoint
-        selection. The calling code is responsible for interpreting the raw
-        HTTP response.
-        """
+    ) -> Any:
+        """Execute a generation request using the preferred endpoint."""
 
         client = self._ensure_client()
         capabilities = self.capabilities
 
+        extra = dict(kwargs)
+        timeout_override = extra.pop("timeout", None)
+
         if capabilities.preferred_endpoint == "responses":
-            payload = self._build_responses_payload(messages, tools=tools, stream=stream, extra=kwargs)
+            payload = self._build_responses_payload(messages, tools=tools, stream=stream, extra=extra)
             url = _RESPONSES_ENDPOINT
         else:
-            payload = self._build_chat_payload(messages, tools=tools, stream=stream, extra=kwargs)
+            payload = self._build_chat_payload(messages, tools=tools, stream=stream, extra=extra)
             url = _CHAT_COMPLETIONS_ENDPOINT
+
+        timeout = timeout_override if timeout_override is not None else self.settings.timeout
 
         logger.debug(
             "Dispatching OpenAI-compatible request via %s (stream=%s)",
@@ -138,8 +154,9 @@ class OpenAICompatibleProvider(BaseProvider):
         )
 
         if stream:
-            return client.post(url, json=payload, timeout=None)
-        return client.post(url, json=payload)
+            return client.stream("POST", url, json=payload, timeout=timeout)
+        return client.post(url, json=payload, timeout=timeout)
+
 
     def close(self) -> None:
         client = self._client
@@ -150,7 +167,11 @@ class OpenAICompatibleProvider(BaseProvider):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _ensure_client(self) -> httpx.Client:
+    def _ensure_client(self) -> "httpx.Client":
+        if _httpx is None:
+            raise NWAiProviderError(
+                "OpenAI-compatible provider requires the optional dependency 'httpx'."
+            )
         if self._client is not None:
             return self._client
 
@@ -168,10 +189,12 @@ class OpenAICompatibleProvider(BaseProvider):
         if self.settings.extra_headers:
             headers.update(self.settings.extra_headers)
 
-        base_url = httpx.URL(self.settings.base_url)
+        assert _httpx is not None  # Runtime guard for optional dependency
+
+        base_url = _httpx.URL(self.settings.base_url)
         client_base = base_url.copy_with(path="/", query=None, fragment=None)
 
-        self._client = httpx.Client(
+        self._client = _httpx.Client(
             base_url=client_base,
             headers=headers,
             timeout=self.settings.timeout,
@@ -179,7 +202,11 @@ class OpenAICompatibleProvider(BaseProvider):
         )
         return self._client
 
-    def _probe_responses_endpoint(self, client: httpx.Client) -> _ProbeOutcome:
+    def _probe_responses_endpoint(self, client: "httpx.Client") -> _ProbeOutcome:
+        if _httpx is None:
+            raise NWAiProviderError(
+                "OpenAI-compatible provider requires the optional dependency 'httpx'."
+            )
         payload = {
             "model": self.settings.model,
             "input": "ping",
@@ -189,7 +216,7 @@ class OpenAICompatibleProvider(BaseProvider):
 
         try:
             response = client.post(_RESPONSES_ENDPOINT, json=payload, timeout=_DETECTION_TIMEOUT)
-        except httpx.HTTPError as exc:
+        except _httpx.HTTPError as exc:
             return _ProbeOutcome(
                 success=False,
                 status_code=None,
@@ -225,10 +252,14 @@ class OpenAICompatibleProvider(BaseProvider):
 
     def _probe_chat_completions(
         self,
-        client: httpx.Client,
+        client: "httpx.Client",
         *,
         lightweight: bool = False,
     ) -> _ProbeOutcome:
+        if _httpx is None:
+            raise NWAiProviderError(
+                "OpenAI-compatible provider requires the optional dependency 'httpx'."
+            )
         payload = {
             "model": self.settings.model,
             "messages": [{"role": "user", "content": "ping"}],
@@ -254,7 +285,7 @@ class OpenAICompatibleProvider(BaseProvider):
 
         try:
             response = client.post(_CHAT_COMPLETIONS_ENDPOINT, json=payload, timeout=_DETECTION_TIMEOUT)
-        except httpx.HTTPError as exc:
+        except _httpx.HTTPError as exc:
             return _ProbeOutcome(
                 success=False,
                 status_code=None,
@@ -289,11 +320,15 @@ class OpenAICompatibleProvider(BaseProvider):
             error=error_message,
         )
 
-    def _fetch_model_metadata(self, client: httpx.Client) -> dict[str, Any] | None:
+    def _fetch_model_metadata(self, client: "httpx.Client") -> dict[str, Any] | None:
+        if _httpx is None:
+            raise NWAiProviderError(
+                "OpenAI-compatible provider requires the optional dependency 'httpx'."
+            )
         endpoint = _MODELS_ENDPOINT.format(model=self.settings.model)
         try:
             response = client.get(endpoint, timeout=_DETECTION_TIMEOUT)
-        except httpx.HTTPError as exc:
+        except _httpx.HTTPError as exc:
             logger.debug("Model metadata fetch failed: %s", exc)
             return None
 
@@ -374,7 +409,7 @@ class OpenAICompatibleProvider(BaseProvider):
         return None
 
     @staticmethod
-    def _extract_header_limit(response: httpx.Response) -> int | None:
+    def _extract_header_limit(response: "httpx.Response") -> int | None:
         for header in ("x-openai-limit-max-output-tokens", "x-openai-max-output-tokens"):
             if header in response.headers:
                 try:
@@ -415,14 +450,14 @@ class OpenAICompatibleProvider(BaseProvider):
         return payload
 
     @staticmethod
-    def _safe_json(response: httpx.Response) -> Any:
+    def _safe_json(response: "httpx.Response") -> Any:
         try:
             return response.json()
         except json.JSONDecodeError:
             return response.text
 
     @staticmethod
-    def _build_error_message(endpoint: str, response: httpx.Response) -> str:
+    def _build_error_message(endpoint: str, response: "httpx.Response") -> str:
         payload = OpenAICompatibleProvider._safe_json(response)
         if isinstance(payload, dict) and "error" in payload:
             detail = payload["error"]

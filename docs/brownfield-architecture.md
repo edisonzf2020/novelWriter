@@ -110,3 +110,12 @@ novelwriter/
 2.  **使用信号/槽**: `ai_copilot` 与 `gui` 之间的通信必须通过信号/槽，而不是直接方法调用。
 3.  **遵循现有编码风格**: 新代码的风格（命名、文档字符串等）必须与现有代码库保持一致。
 4.  **可配置与可禁用**: 整个 AI 功能必须可以通过 `AIConfig` 完全禁用，并且在禁用时不应加载任何相关模块或影响性能。
+
+## 部署与运维指引
+
+- **依赖安装**：AI 功能依赖 `httpx` 等可选库，通过 `pip install novelWriter[ai]` 或 `pip install .[ai]` 进行安装；上线前运行 `python -m pytest tests/test_ai/test_ai_suggestions.py` 验证环境满足可选依赖。
+- **上线检查**：在预生产环境中执行 `CONFIG.ai.create_provider()` 或 `novelwriter --info`，确认能力检测成功，并保存 `CONFIG.ai.getProviderCapabilitiesSummary()` 输出以备诊断。
+- **回滚策略**：若需禁用 Copilot，可在偏好设置中关闭 AI 功能并恢复 `novelWriter.conf` 中的 `AI` 段落快照；必要时回退至 Story 1.1 标签并重新发布。
+- **监控与支持**：持续关注日志中的 `provider.request.failed`、`suggestion.apply_failed` 事件；若发生长时间故障，由 Feature Owner 协调回滚并向支持团队同步状态。
+
+## 增强功能影响分析

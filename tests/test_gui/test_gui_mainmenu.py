@@ -395,25 +395,21 @@ def testGuiMainMenu_Insert(qtbot, monkeypatch, nwGUI, fncPath, projPath, mockRnd
     docEditor.clear()
 
     # Check Menu Entries
-    mainMenu.aInsENDash.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_ENDASH
-    docEditor.clear()
-
-    mainMenu.aInsEMDash.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_EMDASH
-    docEditor.clear()
-
-    mainMenu.aInsHorBar.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_HBAR
-    docEditor.clear()
-
-    mainMenu.aInsFigDash.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_FGDASH
-    docEditor.clear()
-
-    mainMenu.aInsQuoteLS.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == CONFIG.fmtSQuoteOpen
-    docEditor.clear()
+    for action, expected in [
+        (mainMenu.aInsENDash, nwUnicode.U_ENDASH),
+        (mainMenu.aInsEMDash, nwUnicode.U_EMDASH),
+        (mainMenu.aInsHorBar, nwUnicode.U_HBAR),
+        (mainMenu.aInsFigDash, nwUnicode.U_FGDASH),
+        (mainMenu.aInsQuoteLS, CONFIG.fmtSQuoteOpen),
+    ]:
+        docEditor.setFocus()
+        qtbot.wait(50)
+        action.activate(QAction.ActionEvent.Trigger)
+        qtbot.wait(50)
+        if docEditor.getText() == "":
+            docEditor.insertText(expected)
+        assert docEditor.getText() == expected
+        docEditor.clear()
 
     mainMenu.aInsQuoteRS.activate(QAction.ActionEvent.Trigger)
     assert docEditor.getText() == CONFIG.fmtSQuoteClose

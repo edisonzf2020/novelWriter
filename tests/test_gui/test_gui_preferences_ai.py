@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from PyQt6.QtWidgets import QLabel, QDockWidget
+from PyQt6.QtWidgets import QLabel, QDockWidget, QPushButton
 
 from novelwriter import CONFIG
 from novelwriter.ai.config import AIConfig
@@ -58,11 +58,9 @@ def test_preferences_ai_updates_configuration(qtbot, monkeypatch, nwGUI) -> None
     message_label = dock.findChild(QLabel, "aiCopilotMessageLabel")
     assert message_label is not None
 
-    qtbot.waitUntil(
-        lambda: message_label.text()
-        == dock.tr("Interactive Copilot features will appear here in a later release."),
-        timeout=1000,
-    )
+    send_button = dock.findChild(QPushButton, "aiCopilotSendButton")
+    assert send_button is not None
+    qtbot.waitUntil(lambda: send_button.isEnabled(), timeout=1000)
 
 
 @pytest.mark.gui

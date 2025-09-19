@@ -7,8 +7,9 @@ import logging
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from threading import RLock
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional
+from contextlib import ExitStack
+from threading import Lock, RLock
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Mapping, Optional
 from types import MappingProxyType
 from uuid import uuid4
 
@@ -66,6 +67,45 @@ class _AuditRecord:
             "summary": self.summary,
             "level": self.level,
         }
+
+
+class _StreamingResult(Iterator[str]):
+    """Wrap a streaming iterator and expose a cooperative close hook."""
+
+    def __init__(self, iterator: Iterator[str], cancel_callbacks: list[Callable[[], None]]) -> None:
+        self._iterator = iterator
+        self._cancel_callbacks = cancel_callbacks
+        self._lock = Lock()
+        self._closed = False
+
+    def __iter__(self) -> "_StreamingResult":
+        return self
+
+    def __next__(self) -> str:
+        return next(self._iterator)
+
+    def close(self) -> None:
+        """Close the iterator and invoke any registered cancel callbacks."""
+
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            callbacks = list(self._cancel_callbacks)
+            self._cancel_callbacks.clear()
+
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 - best effort cancellation
+                logger.debug("Stream cancel callback raised", exc_info=True)
+
+        close_method = getattr(self._iterator, "close", None)
+        if callable(close_method):
+            try:
+                close_method()
+            except Exception:  # noqa: BLE001 - best effort cancellation
+                logger.debug("Closing streaming iterator failed", exc_info=True)
 
 
 _AUDIT_LOG_LIMIT = 1000
@@ -171,6 +211,103 @@ class NWAiApi:
             self._provider = provider
             logger.debug("AI provider '%s' instantiated", ai_config.provider)
             return provider
+
+    def streamChatCompletion(
+        self,
+        messages: list[Mapping[str, Any]],
+        *,
+        stream: bool = True,
+        tools: list[Mapping[str, Any]] | None = None,
+        extra: Mapping[str, Any] | None = None,
+    ) -> Iterator[str]:
+        """Yield content from a chat completion request against the provider.
+
+        Args:
+            messages: Conversation turns formatted for the provider.
+            stream: When ``True`` the result is yielded incrementally.
+            tools: Optional tool definitions forwarded to the provider.
+            extra: Additional keyword arguments for provider payload tuning
+                (for example ``{"max_output_tokens": 512}``). ``None`` values
+                are ignored.
+
+        Yields:
+            Chunks of provider output in the order they are received.
+
+        Raises:
+            NWAiApiError: If the provider is unavailable or the request fails.
+        """
+
+        if not isinstance(messages, list) or not all(isinstance(item, Mapping) for item in messages):
+            raise NWAiApiError("Messages must be a list of mapping payloads.")
+
+        provider = self._ensure_provider()
+        payload = {key: value for key, value in (extra or {}).items() if value is not None}
+
+        self._record_audit(None, "provider.request.dispatched", summary=f"{len(messages)} message(s) sent")
+
+        cancel_callbacks: list[Callable[[], None]] = []
+
+        def _iterator() -> Iterator[str]:
+            total_chars = 0
+            with ExitStack() as stack:
+                def register_cancel(handle: Any) -> None:
+                    closer = getattr(handle, "close", None)
+                    if not callable(closer):
+                        return
+
+                    executed = False
+
+                    def _safe_close() -> None:
+                        nonlocal executed
+                        if executed:
+                            return
+                        executed = True
+                        try:
+                            closer()
+                        except Exception:  # noqa: BLE001 - best effort cancellation
+                            logger.debug("Closing provider stream failed", exc_info=True)
+
+                    cancel_callbacks.append(_safe_close)
+                    stack.callback(_safe_close)
+
+                def consume(response: Any) -> Iterator[str]:
+                    nonlocal total_chars
+                    for chunk in response.iter_text(chunk_size=256):
+                        if not chunk:
+                            continue
+                        total_chars += len(chunk)
+                        yield chunk
+
+                try:
+                    if stream:
+                        session = provider.generate(messages, stream=True, tools=tools, **payload)
+                        if hasattr(session, "__enter__"):
+                            response = stack.enter_context(session)
+                            register_cancel(response)
+                        else:
+                            response = session
+                            register_cancel(response)
+                        yield from consume(response)
+                    else:
+                        response = provider.generate(messages, stream=False, tools=tools, **payload)
+                        register_cancel(response)
+                        text = response.text
+                        total_chars += len(text)
+                        yield text
+                except Exception as exc:  # noqa: BLE001 - propagate as API error
+                    message = str(exc) or exc.__class__.__name__
+                    self._record_audit(None, "provider.request.failed", summary=message, level="error")
+                    raise NWAiApiError(message) from exc
+                else:
+                    self._record_audit(
+                        None,
+                        "provider.request.succeeded",
+                        summary=f"{total_chars} characters received",
+                    )
+                finally:
+                    cancel_callbacks.clear()
+
+        return _StreamingResult(_iterator(), cancel_callbacks)
 
     # ------------------------------------------------------------------
     # Transaction and auditing
