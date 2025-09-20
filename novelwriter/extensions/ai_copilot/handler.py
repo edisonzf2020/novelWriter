@@ -5,12 +5,14 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass
 from threading import Lock
+import time
 from typing import Any, Dict, Mapping, Optional, Tuple
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
 from novelwriter import CONFIG, SHARED
 from novelwriter.ai import NWAiApi, NWAiApiError
+from novelwriter.ai.threading import AiCancellationToken, AiTaskHandle, get_ai_executor
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are novelWriter's AI Copilot. Provide concise, safe and actionable "
@@ -37,6 +39,14 @@ class CopilotRequest:
     context_budget: Optional[int]
 
 
+class _RequestCancelled(RuntimeError):
+    """Internal signal used to abort a running request."""
+
+
+class _RequestTimeout(RuntimeError):
+    """Raised when a request exceeds its configured timeout."""
+
+
 class CopilotWorker(QObject):
     """Execute a Copilot request on a background thread."""
 
@@ -50,14 +60,24 @@ class CopilotWorker(QObject):
         super().__init__()
         self._api = api
         self._request = request
-        self._cancelled = False
+        self._token: Optional[AiCancellationToken] = None
+        self._deadline: Optional[float] = None
+        self._started_at: float = 0.0
         self._stream_lock = Lock()
         self._active_stream: Optional[Any] = None
+
+    def attach_execution(self, token: AiCancellationToken, deadline: Optional[float]) -> None:
+        """Configure cancellation semantics for the worker."""
+
+        self._token = token
+        self._deadline = deadline
+        self._started_at = time.monotonic()
 
     def cancel(self) -> None:
         """Mark the running request as cancelled."""
 
-        self._cancelled = True
+        if self._token is not None:
+            self._token.cancel()
         stream = self._get_active_stream()
         if stream is not None:
             closer = getattr(stream, "close", None)
@@ -70,7 +90,9 @@ class CopilotWorker(QObject):
     def run(self) -> None:
         """Execute the Copilot request and emit progress signals."""
 
+        iterator: Optional[Any] = None
         try:
+            self._check_interrupted()
             self.statusChanged.emit("collecting_context")
             context = self._api.collectContext(
                 self._request.scope,
@@ -78,9 +100,8 @@ class CopilotWorker(QObject):
                 include_memory=self._request.include_memory,
                 max_length=self._request.context_budget,
             )
-            if self._cancelled:
-                self.requestCancelled.emit()
-                return
+
+            self._check_interrupted()
 
             messages = self._build_messages(context)
             extra: Dict[str, Any] = {}
@@ -88,8 +109,16 @@ class CopilotWorker(QObject):
                 extra["max_output_tokens"] = self._request.max_output_tokens
             if self._request.temperature is not None:
                 extra["temperature"] = self._request.temperature
-            if self._request.timeout is not None:
-                extra["timeout"] = self._request.timeout
+
+            timeout_override = self._request.timeout
+            remaining = self._remaining_timeout()
+            if remaining is not None:
+                if timeout_override is not None:
+                    extra["timeout"] = min(timeout_override, remaining)
+                else:
+                    extra["timeout"] = remaining
+            elif timeout_override is not None:
+                extra["timeout"] = timeout_override
 
             self.statusChanged.emit("requesting_completion")
             output_chunks: list[str] = []
@@ -102,9 +131,7 @@ class CopilotWorker(QObject):
 
             try:
                 for chunk in iterator:
-                    if self._cancelled:
-                        self.requestCancelled.emit()
-                        return
+                    self._check_interrupted()
                     if not chunk:
                         continue
                     output_chunks.append(chunk)
@@ -115,6 +142,8 @@ class CopilotWorker(QObject):
                 if callable(close_iter):
                     with suppress(Exception):
                         close_iter()
+
+            self._check_interrupted()
 
             response_text = "".join(output_chunks).strip()
             self.statusChanged.emit("logging_conversation")
@@ -138,13 +167,21 @@ class CopilotWorker(QObject):
             }
             self.statusChanged.emit("completed")
             self.requestFinished.emit(payload)
+        except _RequestCancelled:
+            self.requestCancelled.emit()
+        except _RequestTimeout:
+            self.cancel()
+            elapsed = 0.0
+            if self._started_at:
+                elapsed = max(0.0, time.monotonic() - self._started_at)
+            self.requestFailed.emit(f"Request timed out after {elapsed:.1f}s.")
         except NWAiApiError as exc:
-            if self._cancelled:
+            if self._token is not None and self._token.cancelled():
                 self.requestCancelled.emit()
             else:
                 self.requestFailed.emit(str(exc))
         except Exception as exc:  # noqa: BLE001 - propagate failure
-            if self._cancelled:
+            if self._token is not None and self._token.cancelled():
                 self.requestCancelled.emit()
             else:
                 self.requestFailed.emit(str(exc))
@@ -160,6 +197,20 @@ class CopilotWorker(QObject):
 
         with self._stream_lock:
             return self._active_stream
+
+    def _check_interrupted(self) -> None:
+        """Raise if the worker should stop processing."""
+
+        if self._token is not None and self._token.cancelled():
+            raise _RequestCancelled()
+        if self._deadline is not None and time.monotonic() >= self._deadline:
+            raise _RequestTimeout()
+
+    def _remaining_timeout(self) -> Optional[float]:
+        if self._deadline is None:
+            return None
+        remaining = self._deadline - time.monotonic()
+        return max(0.0, remaining)
 
     def _build_messages(self, context: str) -> list[Mapping[str, Any]]:
         """Compose provider messages for the current request."""
@@ -198,9 +249,10 @@ class CopilotRequestManager(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._api = NWAiApi(SHARED.project)
-        self._thread: Optional[QThread] = None
         self._worker: Optional[CopilotWorker] = None
+        self._task: Optional[AiTaskHandle] = None
         self._provider_id: Optional[str] = getattr(CONFIG.ai, "provider", None)
+        self._executor = get_ai_executor()
 
     @property
     def api(self) -> NWAiApi:
@@ -211,32 +263,31 @@ class CopilotRequestManager(QObject):
     def has_active_request(self) -> bool:
         """Return ``True`` when a worker thread is currently running."""
 
-        return self._thread is not None
+        return bool(self._task is not None and self._task.is_running())
 
     def start_request(self, payload: CopilotRequest) -> None:
         """Launch a background worker for the given request."""
 
         self._ensure_provider_synced()
 
-        if self._thread is not None:
+        if self._task is not None and self._task.is_running():
             raise RuntimeError("A Copilot request is already running.")
 
         self._worker = CopilotWorker(self._api, payload)
-        self._thread = QThread()
-        self._worker.moveToThread(self._thread)
-
-        self._thread.started.connect(self._worker.run)
         self._worker.chunkProduced.connect(self.chunkProduced)
         self._worker.requestFinished.connect(self._handle_finished)
         self._worker.requestFailed.connect(self._handle_failed)
         self._worker.requestCancelled.connect(self._handle_cancelled)
         self._worker.statusChanged.connect(self.statusChanged)
 
-        self._thread.start()
+        timeout = payload.timeout if payload.timeout is not None else None
+        self._task = self._executor.submit_worker(self._worker, timeout=timeout)
 
     def cancel_request(self) -> None:
         """Attempt to cancel the active worker."""
 
+        if self._task is not None and self._task.is_running():
+            self._task.cancel()
         if self._worker is not None:
             self._worker.cancel()
 
@@ -303,11 +354,9 @@ class CopilotRequestManager(QObject):
         self.requestCancelled.emit()
 
     def _cleanup(self) -> None:
-        if self._thread is not None:
-            self._thread.quit()
-            self._thread.wait()
-            self._thread.deleteLater()
-            self._thread = None
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
         if self._worker is not None:
             self._worker.deleteLater()
             self._worker = None

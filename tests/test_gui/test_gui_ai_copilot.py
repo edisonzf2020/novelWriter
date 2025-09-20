@@ -21,11 +21,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 from types import SimpleNamespace
+import threading
+import time
 
 import pytest
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import QComboBox, QDockWidget, QLabel, QPushButton, QStackedWidget
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QDockWidget,
+    QLabel,
+    QPushButton,
+    QStackedWidget,
+    QTextEdit,
+)
 
 from novelwriter import SHARED
 
@@ -53,6 +63,65 @@ def test_ai_copilot_dock_added_by_default(nwGUI):
     assert scope_selector is not None
     assert scope_selector.count() == 4
     assert scope_selector.currentData() == "current_document"
+
+class _CancellableStream:
+    """Streaming stub that supports cooperative cancellation."""
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.closed = threading.Event()
+
+    def __iter__(self) -> "_CancellableStream":
+        return self
+
+    def __next__(self) -> str:
+        self.started.set()
+        if self.closed.is_set():
+            raise StopIteration
+        if self.closed.wait(0.01):
+            raise StopIteration
+        return "chunk"
+
+    def close(self) -> None:
+        self.closed.set()
+
+
+class _SlowStream(_CancellableStream):
+    """Stream stub that delays subsequent chunks to trigger timeouts."""
+
+    def __init__(self, delay: float) -> None:
+        super().__init__()
+        self._delay = delay
+        self._first = True
+
+    def __next__(self) -> str:
+        self.started.set()
+        if self.closed.is_set():
+            raise StopIteration
+        if self._first:
+            self._first = False
+            if self.closed.wait(0.005):
+                raise StopIteration
+            return "chunk"
+        if self.closed.wait(self._delay):
+            raise StopIteration
+        return "chunk"
+
+
+class _StubAiApi:
+    """Minimal AI API facade used to drive background workers in tests."""
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+
+    def collectContext(self, scope: str, **_: object) -> str:  # noqa: D401 - signature matches prod
+        return f"context:{scope}"
+
+    def streamChatCompletion(self, messages, *, stream=True, extra=None):  # noqa: D401
+        return self._stream
+
+    def logConversationTurn(self, *args, **kwargs) -> None:  # noqa: D401
+        return None
 
 
 @pytest.mark.gui
@@ -216,6 +285,128 @@ def test_ai_copilot_quick_actions_present(monkeypatch, nwGUI):
         assert button.isEnabled()
     dock.deleteLater()
 
+
+
+@pytest.mark.gui
+def test_ai_copilot_cancel_button_aborts_request(monkeypatch, qtbot, nwGUI):
+    """Pressing the cancel button should signal the worker and restore the UI."""
+
+    config = SimpleNamespace(
+        ai=SimpleNamespace(
+            enabled=True,
+            api_key="token",
+            api_key_from_env=False,
+            provider="openai",
+            max_tokens=128,
+            timeout=5.0,
+        )
+    )
+    stream = _CancellableStream()
+    stub_api = _StubAiApi(stream)
+
+    monkeypatch.setattr("novelwriter.extensions.ai_copilot.dock.CONFIG", config, raising=False)
+    monkeypatch.setattr("novelwriter.extensions.ai_copilot.handler.CONFIG", config, raising=False)
+    monkeypatch.setattr(
+        "novelwriter.extensions.ai_copilot.handler.NWAiApi",
+        lambda project: stub_api,
+        raising=False,
+    )
+
+    dock = AICopilotDock(nwGUI)
+    try:
+        input_edit = dock.findChild(QTextEdit, "aiCopilotInput")
+        send_button = dock.findChild(QPushButton, "aiCopilotSendButton")
+        cancel_button = dock.findChild(QPushButton, "aiCopilotCancelButton")
+        status_label = dock.findChild(QLabel, "aiCopilotStatusMessage")
+
+        assert input_edit is not None and send_button is not None
+        assert cancel_button is not None and status_label is not None
+
+        input_edit.setPlainText("Hello AI")
+        qtbot.mouseClick(send_button, Qt.MouseButton.LeftButton)
+
+        qtbot.waitUntil(stream.started.is_set, timeout=2000)
+        qtbot.wait(50)
+
+        cancel_button.click()
+
+        qtbot.waitUntil(lambda: stream.closed.is_set(), timeout=2000)
+        qtbot.waitUntil(
+            lambda: not dock._request_manager.has_active_request(),  # type: ignore[attr-defined]
+            timeout=2000,
+        )
+        qtbot.waitUntil(
+            lambda: dock._messages and dock._messages[-1]["role"] == "system",  # type: ignore[attr-defined]
+            timeout=2000,
+        )
+
+        assert dock._messages[-1]["content"] == dock.tr("Request cancelled.")  # type: ignore[attr-defined]
+        assert status_label.text().startswith(dock.tr("Cancelled."))
+    finally:
+        manager = getattr(dock, "_request_manager", None)
+        if manager is not None and manager.has_active_request():
+            manager.cancel_request()
+            qtbot.wait(50)
+        dock.deleteLater()
+
+
+@pytest.mark.gui
+def test_ai_copilot_timeout_reports_error(monkeypatch, qtbot, nwGUI):
+    """Requests exceeding the configured timeout should surface an error state."""
+
+    timeout_seconds = 0.05
+    config = SimpleNamespace(
+        ai=SimpleNamespace(
+            enabled=True,
+            api_key="token",
+            api_key_from_env=False,
+            provider="openai",
+            max_tokens=128,
+            timeout=timeout_seconds,
+        )
+    )
+    stream = _SlowStream(delay=0.2)
+    stub_api = _StubAiApi(stream)
+
+    monkeypatch.setattr("novelwriter.extensions.ai_copilot.dock.CONFIG", config, raising=False)
+    monkeypatch.setattr("novelwriter.extensions.ai_copilot.handler.CONFIG", config, raising=False)
+    monkeypatch.setattr(
+        "novelwriter.extensions.ai_copilot.handler.NWAiApi",
+        lambda project: stub_api,
+        raising=False,
+    )
+
+    dock = AICopilotDock(nwGUI)
+    try:
+        input_edit = dock.findChild(QTextEdit, "aiCopilotInput")
+        send_button = dock.findChild(QPushButton, "aiCopilotSendButton")
+        status_label = dock.findChild(QLabel, "aiCopilotStatusMessage")
+
+        assert input_edit is not None and send_button is not None
+        assert status_label is not None
+
+        input_edit.setPlainText("Trigger timeout")
+        qtbot.mouseClick(send_button, Qt.MouseButton.LeftButton)
+
+        qtbot.waitUntil(stream.started.is_set, timeout=2000)
+        qtbot.waitUntil(
+            lambda: dock._messages and dock._messages[-1]["role"] == "error",  # type: ignore[attr-defined]
+            timeout=3000,
+        )
+        qtbot.waitUntil(
+            lambda: not dock._request_manager.has_active_request(),  # type: ignore[attr-defined]
+            timeout=2000,
+        )
+
+        error_message = dock._messages[-1]["content"]  # type: ignore[attr-defined]
+        assert "timed out" in error_message.lower()
+        assert status_label.text().startswith(dock.tr("An error occurred."))
+    finally:
+        manager = getattr(dock, "_request_manager", None)
+        if manager is not None and manager.has_active_request():
+            manager.cancel_request()
+            qtbot.wait(50)
+        dock.deleteLater()
 
 @pytest.mark.gui
 def test_ai_copilot_status_shows_provider(monkeypatch, nwGUI) -> None:

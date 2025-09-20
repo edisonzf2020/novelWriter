@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from configparser import ConfigParser
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from novelwriter.ai.errors import NWAiConfigError, NWAiProviderError
@@ -67,6 +68,12 @@ class AIConfig:
         "user_agent",
         "availability_reason",
         "default_model_metadata",
+        "metrics_enabled",
+        "metrics_log_path",
+        "metrics_max_samples",
+        "cache_enabled",
+        "cache_max_entries",
+        "cache_ttl_seconds",
         "_api_key_from_env",
     )
 
@@ -88,7 +95,15 @@ class AIConfig:
         self.user_agent: str | None = None
         self.availability_reason: str | None = None
         self.default_model_metadata: dict[str, Any] | None = None
+        self.metrics_enabled: bool = True
+        self.metrics_log_path: str | None = None
+        self.metrics_max_samples: int = 200
+        self.cache_enabled: bool = True
+        self.cache_max_entries: int = 256
+        self.cache_ttl_seconds: float = 300.0
         self._api_key_from_env: bool = False
+
+        self._sync_instrumentation()
 
     @property
     def api_key_from_env(self) -> bool:
@@ -112,6 +127,12 @@ class AIConfig:
             and self.openai_organisation is None
             and (self.extra_headers is None or not self.extra_headers)
             and self.user_agent is None
+            and self.metrics_enabled
+            and self.metrics_log_path is None
+            and self.metrics_max_samples == 200
+            and self.cache_enabled
+            and self.cache_max_entries == 256
+            and self.cache_ttl_seconds == 300.0
         )
 
     # ------------------------------------------------------------------
@@ -146,6 +167,13 @@ class AIConfig:
         self.default_model_metadata = self._parse_model_metadata(
             reader.get_str(section, "default_model_metadata", "")
         )
+        self.metrics_enabled = reader.get_bool(section, "metrics_enabled", self.metrics_enabled)
+        raw_log_path = reader.get_str(section, "metrics_log_path", self.metrics_log_path or "")
+        self.metrics_log_path = self._normalise_optional(raw_log_path)
+        self.metrics_max_samples = reader.get_int(section, "metrics_max_samples", self.metrics_max_samples)
+        self.cache_enabled = reader.get_bool(section, "cache_enabled", self.cache_enabled)
+        self.cache_max_entries = reader.get_int(section, "cache_max_entries", self.cache_max_entries)
+        self.cache_ttl_seconds = reader.get_float(section, "cache_ttl_seconds", self.cache_ttl_seconds)
         self.availability_reason = None
 
         stored_key = reader.get_str(section, "api_key", "")
@@ -159,6 +187,8 @@ class AIConfig:
         else:
             self.api_key = stored_key
             self._api_key_from_env = False
+
+        self._sync_instrumentation()
 
     def save_to_main_config(self, conf: ConfigParser) -> None:
         """Persist current AI configuration into the main config parser."""
@@ -179,6 +209,11 @@ class AIConfig:
         conf[section]["temperature"] = str(self.temperature)
         conf[section]["dry_run_default"] = str(self.dry_run_default)
         conf[section]["ask_before_apply"] = str(self.ask_before_apply)
+        conf[section]["metrics_enabled"] = str(self.metrics_enabled)
+        conf[section]["metrics_max_samples"] = str(self.metrics_max_samples)
+        conf[section]["cache_enabled"] = str(self.cache_enabled)
+        conf[section]["cache_max_entries"] = str(self.cache_max_entries)
+        conf[section]["cache_ttl_seconds"] = str(self.cache_ttl_seconds)
 
         if self.openai_organisation:
             conf[section]["openai_organisation"] = str(self.openai_organisation)
@@ -189,6 +224,11 @@ class AIConfig:
             conf[section]["user_agent"] = str(self.user_agent)
         elif conf.has_option(section, "user_agent"):
             conf.remove_option(section, "user_agent")
+
+        if self.metrics_log_path:
+            conf[section]["metrics_log_path"] = str(self.metrics_log_path)
+        elif conf.has_option(section, "metrics_log_path"):
+            conf.remove_option(section, "metrics_log_path")
 
         headers_serialised = self._serialise_header_entries(self.extra_headers)
         if headers_serialised:
@@ -207,6 +247,22 @@ class AIConfig:
                 conf.remove_option(section, "api_key")
         else:
             conf[section]["api_key"] = str(self.api_key)
+
+    def _sync_instrumentation(self) -> None:
+        """Apply current telemetry configuration to the performance tracker."""
+
+        try:
+            from novelwriter.ai.performance import get_tracker
+        except Exception:  # pragma: no cover - defensive import guard
+            return
+
+        log_path = self.metrics_log_path
+        resolved_path = Path(log_path).expanduser() if log_path else Path(".ai") / "debug-log.md"
+        get_tracker().configure(
+            enabled=self.metrics_enabled,
+            log_path=resolved_path,
+            max_samples=max(1, int(self.metrics_max_samples or 200)),
+        )
 
     def reset_api_key(self) -> None:
         """Clear any cached API key information and disable env overrides."""

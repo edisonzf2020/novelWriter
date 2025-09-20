@@ -43,4 +43,14 @@
 > * 能自动判断并优先使用 `POST /v1/responses` 接口，否则回退到 `POST /v1/chat/completions`。
 > * 检测结果在会话级别缓存，并记入调试日志。
 
+**用户故事 3.2: 引入 OpenAI 官方 Python SDK Provider**
+> **作为 AI Copilot 维护者，** 我希望在现有 Provider 体系中集成官方 OpenAI Python SDK 并提供可配置切换，
+> **以便** 减少协议变更导致的请求错误并提升对最新能力的兼容性。
+> **验收标准:**
+> * 在 `AIConfig` 和 Provider 工厂中新增 "openai-sdk" 选项，启用后 `NWAiApi` 通过官方 `openai.OpenAI` 客户端执行 `/v1/responses` 与 `/v1/chat/completions` 请求，并保留原有 `openai` 兼容实现作为回退策略。
+> * 官方 SDK Provider 能正确处理 `input` 载荷（包含字符串与复合多段输入），避免日志中 `Invalid type for 'input': expected string, but got array.` 的错误；当 `/v1/responses` 不可用时自动降级到 `/v1/chat/completions` 并记录调试日志。
+> * 能力探测与模型列表通过官方 SDK (`client.models.list`/`retrieve`) 实现，返回结果映射至 `ProviderCapabilities` 结构，并写入审核日志以供 UI 查询。
+> * `AIConfig` 持久化模型/参数时兼容新 Provider，`novelwriter/dialogs/preferences.py` 中的 Provider 下拉和连接校验按钮支持选择、保存和回显 "OpenAI Official SDK"，未安装 SDK 时显示可用性提醒。
+> * `pyproject.toml` 的 `ai` 可选依赖扩展包含兼容版本的 `openai` 包，缺失依赖时 Copilot 展示友好提示；新增单元与 GUI 测试覆盖 Provider 构建、流式输出、错误映射和 UI 切换场景，并通过 CI。
+
 ---

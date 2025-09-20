@@ -1,0 +1,48 @@
+schema: 1
+story: '4.0'
+story_title: '优化的性能与响应机制'
+gate: PASS
+status_reason: 'Background executor, observability, and provider cache meet ACs without blocking findings.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-09-20T23:30:52+08:00'
+
+waiver: { active: false }
+
+top_issues: []
+
+risk_summary:
+  totals: { critical: 0, high: 0, medium: 0, low: 0 }
+  recommendations:
+    must_fix: []
+    monitor: []
+
+quality_score: 100
+expires: '2025-10-04T23:30:52+08:00'
+
+evidence:
+  tests_reviewed: 3
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: '后台线程与缓存实现未扩大攻击面。'
+  performance:
+    status: PASS
+    notes: '线程池执行器与缓存命中满足响应性与指标要求。'
+  reliability:
+    status: PASS
+    notes: '取消、超时与审计流水提升故障可观测性。'
+  maintainability:
+    status: PASS
+    notes: '模块化实现与配套测试保持可维护性。'
+
+recommendations:
+  immediate: []
+  future:
+    - action: '补充 GUI 取消/超时的集成测试以验证信号链路。'
+      refs:
+        - 'tests/test_gui/test_gui_ai_copilot.py'

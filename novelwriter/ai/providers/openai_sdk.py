@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from novelwriter.ai.errors import NWAiProviderError
+from novelwriter.ai.performance import current_span
 
 from .base import BaseProvider, ProviderCapabilities, ProviderSettings
 
@@ -256,6 +257,9 @@ class OpenAISDKProvider(BaseProvider):
         except NWAiProviderError as exc:
             if capabilities.preferred_endpoint == "responses":
                 logger.debug("Responses endpoint failed, falling back to chat completions: %s", exc)
+                span = current_span()
+                if span is not None:
+                    span.mark_degraded("responses", "chat_completions")
                 return self._dispatch_via_chat(
                     client,
                     messages,

@@ -367,7 +367,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsENDash = qtAddAction(self.mInsDashes, self.tr("Short Dash"))
         self.aInsENDash.setShortcut("Ctrl+K, -")
         self.aInsENDash.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_ENDASH)
+            lambda: self._emit_insert_text(nwUnicode.U_ENDASH)
         )
         self.mainGui.addAction(self.aInsENDash)
 
@@ -375,7 +375,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsEMDash = qtAddAction(self.mInsDashes, self.tr("Long Dash"))
         self.aInsEMDash.setShortcut("Ctrl+K, _")
         self.aInsEMDash.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_EMDASH)
+            lambda: self._emit_insert_text(nwUnicode.U_EMDASH)
         )
         self.mainGui.addAction(self.aInsEMDash)
 
@@ -383,7 +383,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsHorBar = qtAddAction(self.mInsDashes, self.tr("Horizontal Bar"))
         self.aInsHorBar.setShortcut("Ctrl+K, Ctrl+_")
         self.aInsHorBar.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_HBAR)
+            lambda: self._emit_insert_text(nwUnicode.U_HBAR)
         )
         self.mainGui.addAction(self.aInsHorBar)
 
@@ -391,7 +391,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsFigDash = qtAddAction(self.mInsDashes, self.tr("Figure Dash"))
         self.aInsFigDash.setShortcut("Ctrl+K, ~")
         self.aInsFigDash.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_FGDASH)
+            lambda: self._emit_insert_text(nwUnicode.U_FGDASH)
         )
         self.mainGui.addAction(self.aInsFigDash)
 
@@ -434,7 +434,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsMSApos = qtAddAction(self.mInsQuotes, self.tr("Alternative Apostrophe"))
         self.aInsMSApos.setShortcut("Ctrl+K, '")
         self.aInsMSApos.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_MAPOS)
+            lambda: self._emit_insert_text(nwUnicode.U_MAPOS)
         )
         self.mainGui.addAction(self.aInsMSApos)
 
@@ -445,7 +445,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsEllipsis = qtAddAction(self.mInsPunct, self.tr("Ellipsis"))
         self.aInsEllipsis.setShortcut("Ctrl+K, .")
         self.aInsEllipsis.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_HELLIP)
+            lambda: self._emit_insert_text(nwUnicode.U_HELLIP)
         )
         self.mainGui.addAction(self.aInsEllipsis)
 
@@ -453,7 +453,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsPrime = qtAddAction(self.mInsPunct, self.tr("Prime"))
         self.aInsPrime.setShortcut("Ctrl+K, Ctrl+'")
         self.aInsPrime.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_PRIME)
+            lambda: self._emit_insert_text(nwUnicode.U_PRIME)
         )
         self.mainGui.addAction(self.aInsPrime)
 
@@ -461,7 +461,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsDPrime = qtAddAction(self.mInsPunct, self.tr("Double Prime"))
         self.aInsDPrime.setShortcut('Ctrl+K, Ctrl+"')
         self.aInsDPrime.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_DPRIME)
+            lambda: self._emit_insert_text(nwUnicode.U_DPRIME)
         )
         self.mainGui.addAction(self.aInsDPrime)
 
@@ -472,7 +472,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsNBSpace = qtAddAction(self.mInsSpace, self.tr("Non-Breaking Space"))
         self.aInsNBSpace.setShortcut("Ctrl+K, Space")
         self.aInsNBSpace.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_NBSP)
+            lambda: self._emit_insert_text(nwUnicode.U_NBSP)
         )
         self.mainGui.addAction(self.aInsNBSpace)
 
@@ -480,7 +480,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsThinSpace = qtAddAction(self.mInsSpace, self.tr("Thin Space"))
         self.aInsThinSpace.setShortcut("Ctrl+K, Shift+Space")
         self.aInsThinSpace.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_THSP)
+            lambda: self._emit_insert_text(nwUnicode.U_THSP)
         )
         self.mainGui.addAction(self.aInsThinSpace)
 
@@ -488,7 +488,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsThinNBSpace = qtAddAction(self.mInsSpace, self.tr("Thin Non-Breaking Space"))
         self.aInsThinNBSpace.setShortcut("Ctrl+K, Ctrl+Space")
         self.aInsThinNBSpace.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_THNBSP)
+            lambda: self._emit_insert_text(nwUnicode.U_THNBSP)
         )
         self.mainGui.addAction(self.aInsThinNBSpace)
 
@@ -499,7 +499,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsBullet = qtAddAction(self.mInsSymbol, self.tr("List Bullet"))
         self.aInsBullet.setShortcut("Ctrl+K, *")
         self.aInsBullet.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_BULL)
+            lambda: self._emit_insert_text(nwUnicode.U_BULL)
         )
         self.mainGui.addAction(self.aInsBullet)
 
@@ -507,7 +507,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsHyBull = qtAddAction(self.mInsSymbol, self.tr("Hyphen Bullet"))
         self.aInsHyBull.setShortcut("Ctrl+K, Ctrl+-")
         self.aInsHyBull.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_HYBULL)
+            lambda: self._emit_insert_text(nwUnicode.U_HYBULL)
         )
         self.mainGui.addAction(self.aInsHyBull)
 
@@ -515,7 +515,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsFlower = qtAddAction(self.mInsSymbol, self.tr("Flower Mark"))
         self.aInsFlower.setShortcut("Ctrl+K, Ctrl+*")
         self.aInsFlower.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_FLOWER)
+            lambda: self._emit_insert_text(nwUnicode.U_FLOWER)
         )
         self.mainGui.addAction(self.aInsFlower)
 
@@ -523,7 +523,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsPerMille = qtAddAction(self.mInsSymbol, self.tr("Per Mille"))
         self.aInsPerMille.setShortcut("Ctrl+K, %")
         self.aInsPerMille.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_PERMIL)
+            lambda: self._emit_insert_text(nwUnicode.U_PERMIL)
         )
         self.mainGui.addAction(self.aInsPerMille)
 
@@ -531,7 +531,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsDegree = qtAddAction(self.mInsSymbol, self.tr("Degree Symbol"))
         self.aInsDegree.setShortcut("Ctrl+K, Ctrl+O")
         self.aInsDegree.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_DEGREE)
+            lambda: self._emit_insert_text(nwUnicode.U_DEGREE)
         )
         self.mainGui.addAction(self.aInsDegree)
 
@@ -539,7 +539,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsMinus = qtAddAction(self.mInsSymbol, self.tr("Minus Sign"))
         self.aInsMinus.setShortcut("Ctrl+K, Ctrl+M")
         self.aInsMinus.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_MINUS)
+            lambda: self._emit_insert_text(nwUnicode.U_MINUS)
         )
         self.mainGui.addAction(self.aInsMinus)
 
@@ -547,7 +547,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsTimes = qtAddAction(self.mInsSymbol, self.tr("Times Sign"))
         self.aInsTimes.setShortcut("Ctrl+K, Ctrl+X")
         self.aInsTimes.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_TIMES)
+            lambda: self._emit_insert_text(nwUnicode.U_TIMES)
         )
         self.mainGui.addAction(self.aInsTimes)
 
@@ -555,7 +555,7 @@ class GuiMainMenu(QMenuBar):
         self.aInsDivide = qtAddAction(self.mInsSymbol, self.tr("Division Sign"))
         self.aInsDivide.setShortcut("Ctrl+K, Ctrl+D")
         self.aInsDivide.triggered.connect(
-            lambda: self.requestDocInsertText.emit(nwUnicode.U_DIVIDE)
+            lambda: self._emit_insert_text(nwUnicode.U_DIVIDE)
         )
         self.mainGui.addAction(self.aInsDivide)
 
@@ -591,7 +591,7 @@ class GuiMainMenu(QMenuBar):
         for field in nwStats.ALL_FIELDS:
             value = nwShortcode.FIELD_VALUE.format(field)
             action = qtAddAction(self.mInsField, trStats(nwLabels.STATS_NAME[field]))
-            action.triggered.connect(qtLambda(self.requestDocInsertText.emit, value))
+            action.triggered.connect(qtLambda(self._emit_insert_text, value))
 
         # Insert > Breaks and Vertical Space
         self.mInsBreaks = qtAddMenu(self.insMenu, self.tr("Breaks and Vertical Space"))
@@ -1044,3 +1044,9 @@ class GuiMainMenu(QMenuBar):
         # Document > Main Website
         self.aWebsite = qtAddAction(self.helpMenu, self.tr("The novelWriter Website"))
         self.aWebsite.triggered.connect(qtLambda(SHARED.openWebsite, nwConst.URL_WEB))
+
+    def _emit_insert_text(self, text: str) -> None:
+        """Request editor focus and insert text synchronously."""
+
+        self.requestFocusChange.emit(nwFocus.DOCUMENT)
+        self.requestDocInsertText.emit(text)

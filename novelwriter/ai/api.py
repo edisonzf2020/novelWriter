@@ -23,6 +23,8 @@ from .errors import NWAiApiError, NWAiConfigError, NWAiProviderError
 from .memory import ConversationMemory, ConversationTurn
 from .models import BuildResult, DocumentRef, ModelInfo, Suggestion, TextRange
 from .providers import ProviderCapabilities
+from .cache import ProviderQueryCache, build_cache_key, config_from_ai
+from .performance import get_tracker
 
 __all__ = ["NWAiApi"]
 
@@ -73,9 +75,16 @@ class _AuditRecord:
 class _StreamingResult(Iterator[str]):
     """Wrap a streaming iterator and expose a cooperative close hook."""
 
-    def __init__(self, iterator: Iterator[str], cancel_callbacks: list[Callable[[], None]]) -> None:
+    def __init__(
+        self,
+        iterator: Iterator[str],
+        cancel_callbacks: list[Callable[[], None]],
+        *,
+        on_close: Callable[[str], None] | None = None,
+    ) -> None:
         self._iterator = iterator
         self._cancel_callbacks = cancel_callbacks
+        self._on_close = on_close
         self._lock = Lock()
         self._closed = False
 
@@ -83,17 +92,34 @@ class _StreamingResult(Iterator[str]):
         return self
 
     def __next__(self) -> str:
-        return next(self._iterator)
+        try:
+            value = next(self._iterator)
+        except StopIteration:
+            self._notify_close("completed")
+            raise
+        return value
 
     def close(self) -> None:
         """Close the iterator and invoke any registered cancel callbacks."""
 
+        self._notify_close("cancelled")
+
+    def _notify_close(self, reason: str) -> None:
+        callbacks: list[Callable[[], None]]
+        close_method: Callable[[], None] | None
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             callbacks = list(self._cancel_callbacks)
             self._cancel_callbacks.clear()
+            close_method = getattr(self._iterator, "close", None)
+
+        if self._on_close is not None:
+            try:
+                self._on_close(reason)
+            except Exception:  # noqa: BLE001 - observability must never break execution
+                logger.debug("Streaming on_close callback failed", exc_info=True)
 
         for callback in callbacks:
             try:
@@ -101,7 +127,6 @@ class _StreamingResult(Iterator[str]):
             except Exception:  # noqa: BLE001 - best effort cancellation
                 logger.debug("Stream cancel callback raised", exc_info=True)
 
-        close_method = getattr(self._iterator, "close", None)
         if callable(close_method):
             try:
                 close_method()
@@ -160,6 +185,7 @@ class NWAiApi:
         self._pending_suggestions: dict[str, dict[str, Any]] = {}
         self._conversation_memory = ConversationMemory()
         self._provider_lock = RLock()
+        self._query_cache = ProviderQueryCache()
         self._provider: "BaseProvider" | None = None
 
     # ------------------------------------------------------------------
@@ -347,22 +373,7 @@ class NWAiApi:
         tools: list[Mapping[str, Any]] | None = None,
         extra: Mapping[str, Any] | None = None,
     ) -> Iterator[str]:
-        """Yield content from a chat completion request against the provider.
-
-        Args:
-            messages: Conversation turns formatted for the provider.
-            stream: When ``True`` the result is yielded incrementally.
-            tools: Optional tool definitions forwarded to the provider.
-            extra: Additional keyword arguments for provider payload tuning
-                (for example ``{"max_output_tokens": 512}``). ``None`` values
-                are ignored.
-
-        Yields:
-            Chunks of provider output in the order they are received.
-
-        Raises:
-            NWAiApiError: If the provider is unavailable or the request fails.
-        """
+        """Yield content from a chat completion request against the provider."""
 
         if not isinstance(messages, list) or not all(isinstance(item, Mapping) for item in messages):
             raise NWAiApiError("Messages must be a list of mapping payloads.")
@@ -370,142 +381,238 @@ class NWAiApi:
         provider = self._ensure_provider()
         payload = {key: value for key, value in (extra or {}).items() if value is not None}
 
-        self._record_audit(None, "provider.request.dispatched", summary=f"{len(messages)} message(s) sent")
+        ai_config = getattr(CONFIG, "ai", None)
+        tracker = get_tracker()
+        provider_id = getattr(ai_config, "provider", type(provider).__name__)
+        settings = getattr(provider, "settings", None)
+        base_url = getattr(settings, "base_url", "") if settings is not None else ""
+        model_name = getattr(settings, "model", "") if settings is not None else ""
 
-        cancel_callbacks: list[Callable[[], None]] = []
+        cache = None
+        cache_key: str | None = None
+        if ai_config is not None:
+            cache_config = config_from_ai(ai_config)
+            signature = f"{provider_id}:{base_url}:{model_name}"
+            cache = self._query_cache.acquire(signature, cache_config)
+            if cache is not None:
+                cache_key = build_cache_key(
+                    provider=provider_id,
+                    base_url=base_url,
+                    model=model_name,
+                    messages=messages,
+                    tools=tools or [],
+                    extra=payload,
+                )
 
-        def _iterator() -> Iterator[str]:
-            total_chars = 0
+        self._record_audit(
+            None,
+            "provider.request.dispatched",
+            summary=f"{len(messages)} message(s) sent",
+        )
 
-            def _iter_event_stream(response: Any) -> Iterator[str]:
-                line_iter = getattr(response, "iter_lines", None)
-                if callable(line_iter):
-                    lines = line_iter()
-                else:
-                    text_iter = getattr(response, "iter_text", None)
-                    if not callable(text_iter):
-                        return
-                    combined = "".join(part or "" for part in text_iter())
-                    lines = combined.splitlines()
+        capabilities = None
+        ensure_capabilities = getattr(provider, "ensure_capabilities", None)
+        if callable(ensure_capabilities):
+            capabilities = ensure_capabilities()
 
-                event_type: str | None = None
-                data_lines: list[str] = []
+        span_metadata = {
+            "message_count": len(messages),
+            "model": model_name,
+        }
+        timeout_hint = payload.get("timeout") if isinstance(payload.get("timeout"), (int, float)) else None
 
-                def flush() -> tuple[str | None, str | None]:
-                    if not event_type:
-                        data_lines.clear()
-                        return None, None
-                    data = "\n".join(data_lines)
-                    data_lines.clear()
-                    return event_type, data
+        with tracker.start_request(
+            provider_id,
+            stream=stream,
+            timeout=float(timeout_hint) if timeout_hint is not None else None,
+            metadata=span_metadata,
+        ) as span:
+            if capabilities is not None:
+                span.set_endpoint(getattr(capabilities, "preferred_endpoint", None))
+            if base_url:
+                span.metadata.setdefault("base_url", base_url)
 
-                for raw in lines:
-                    if raw is None:
-                        continue
-                    if isinstance(raw, bytes):
-                        raw = raw.decode("utf-8", errors="ignore")
-                    line = raw.strip("\r")
-                    if line == "":
-                        evt, data = flush()
-                        if evt and data:
-                            yield from _consume_event(evt, data)
-                        event_type = None
-                        continue
-                    if line.startswith("event:"):
-                        event_type = line[6:].strip()
-                        continue
-                    if line.startswith("data:"):
-                        data_lines.append(line[5:].lstrip())
-                        continue
-                    data_lines.append(line)
+            cached_entry = None
+            if cache is not None and cache_key is not None:
+                cached_entry = cache.fetch(cache_key)
 
-                evt, data = flush()
-                if evt and data:
-                    yield from _consume_event(evt, data)
+            if cached_entry is not None:
+                self._record_audit(
+                    None,
+                    "provider.request.cached",
+                    summary=f"{len(messages)} message(s) served from cache",
+                )
 
-            def _consume_event(event_name: str, data: str) -> Iterator[str]:
-                lowered = event_name.lower()
-                if lowered.endswith("output_text.delta"):
-                    try:
-                        payload_obj = json.loads(data) if data else {}
-                    except json.JSONDecodeError:
-                        text_part = data
-                    else:
-                        text_part = (
-                            payload_obj.get("delta")
-                            or payload_obj.get("text")
-                            or payload_obj.get("content")
-                            or ""
-                        )
-                    if text_part:
-                        yield text_part
-                # Ignore other SSE events; the deltas already cover text output.
-
-            with ExitStack() as stack:
-                def register_cancel(handle: Any) -> None:
-                    closer = getattr(handle, "close", None)
-                    if not callable(closer):
-                        return
-
-                    executed = False
-
-                    def _safe_close() -> None:
-                        nonlocal executed
-                        if executed:
-                            return
-                        executed = True
-                        try:
-                            closer()
-                        except Exception:  # noqa: BLE001 - best effort cancellation
-                            logger.debug("Closing provider stream failed", exc_info=True)
-
-                    cancel_callbacks.append(_safe_close)
-                    stack.callback(_safe_close)
-
-                def consume(response: Any) -> Iterator[str]:
-                    nonlocal total_chars
-                    for chunk in response.iter_text(chunk_size=256):
-                        if not chunk:
-                            continue
-                        total_chars += len(chunk)
+                def _cached_iter() -> Iterator[str]:
+                    for chunk in cached_entry.chunks:
+                        if chunk:
+                            span.add_output(len(chunk))
                         yield chunk
 
-                try:
-                    if stream:
-                        session = provider.generate(messages, stream=True, tools=tools, **payload)
-                        if hasattr(session, "__enter__"):
-                            response = stack.enter_context(session)
-                        else:
-                            response = session
-                        register_cancel(response)
-
-                        content_type = str(getattr(response, "headers", {}).get("content-type", "")).lower()
-                        if "text/event-stream" in content_type:
-                            for text_part in _iter_event_stream(response):
-                                if not text_part:
-                                    continue
-                                total_chars += len(text_part)
-                                yield text_part
-                        else:
-                            yield from consume(response)
+                def _on_cached_close(reason: str) -> None:
+                    if reason == "completed":
+                        span.finish("cached")
+                    elif reason == "cancelled":
+                        span.cancel("cancelled")
                     else:
-                        response = provider.generate(messages, stream=False, tools=tools, **payload)
-                        register_cancel(response)
-                        yield from consume(response)
-                except Exception as exc:  # noqa: BLE001 - propagate as API error
-                    message = str(exc) or exc.__class__.__name__
-                    self._record_audit(None, "provider.request.failed", summary=message, level="error")
-                    raise NWAiApiError(message) from exc
-                else:
-                    self._record_audit(
-                        None,
-                        "provider.request.succeeded",
-                        summary=f"{total_chars} characters received",
-                    )
-                finally:
-                    cancel_callbacks.clear()
+                        span.finish(reason)
 
-        return _StreamingResult(_iterator(), cancel_callbacks)
+                return _StreamingResult(_cached_iter(), [], on_close=_on_cached_close)
+
+            cancel_callbacks: list[Callable[[], None]] = []
+            collected_chunks: list[str] | None = [] if cache is not None and cache_key is not None else None
+
+            def _on_stream_close(reason: str) -> None:
+                if reason == "completed":
+                    if collected_chunks is not None and cache is not None and cache_key is not None:
+                        cache.store(cache_key, collected_chunks)
+                    span.finish("success")
+                elif reason == "cancelled":
+                    span.cancel("cancelled")
+                else:
+                    span.finish(reason)
+
+            def _iterator() -> Iterator[str]:
+                total_chars = 0
+                collected = collected_chunks
+
+                def _record_chunk(text: str) -> None:
+                    nonlocal total_chars
+                    if not text:
+                        return
+                    total_chars += len(text)
+                    span.add_output(len(text))
+                    if collected is not None:
+                        collected.append(text)
+
+                def _iter_event_stream(response: Any) -> Iterator[str]:
+                    line_iter = getattr(response, "iter_lines", None)
+                    if callable(line_iter):
+                        lines = line_iter()
+                    else:
+                        text_iter = getattr(response, "iter_text", None)
+                        if not callable(text_iter):
+                            return
+                        combined = "".join(part or "" for part in text_iter())
+                        lines = combined.splitlines()
+
+                    event_type: str | None = None
+                    data_lines: list[str] = []
+
+                    def flush() -> tuple[str | None, str | None]:
+                        if not event_type:
+                            data_lines.clear()
+                            return None, None
+                        data = "\n".join(data_lines)
+                        data_lines.clear()
+                        return event_type, data
+
+                    for raw in lines:
+                        if raw is None:
+                            continue
+                        if isinstance(raw, bytes):
+                            raw = raw.decode("utf-8", errors="ignore")
+                        line = raw.strip("\r")
+                        if line == "":
+                            evt, data = flush()
+                            if evt and data:
+                                yield from _consume_event(evt, data)
+                            event_type = None
+                            continue
+                        if line.startswith("event:"):
+                            event_type = line[6:].strip()
+                            continue
+                        if line.startswith("data:"):
+                            data_lines.append(line[5:].lstrip())
+                            continue
+                        data_lines.append(line)
+
+                    evt, data = flush()
+                    if evt and data:
+                        yield from _consume_event(evt, data)
+
+                def _consume_event(event_name: str, data: str) -> Iterator[str]:
+                    lowered = event_name.lower()
+                    if lowered.endswith("output_text.delta"):
+                        try:
+                            payload_obj = json.loads(data) if data else {}
+                        except json.JSONDecodeError:
+                            text_part = data
+                        else:
+                            text_part = (
+                                payload_obj.get("delta")
+                                or payload_obj.get("text")
+                                or payload_obj.get("content")
+                                or ""
+                            )
+                        if text_part:
+                            _record_chunk(text_part)
+                            yield text_part
+
+                with ExitStack() as stack:
+                    def register_cancel(handle: Any) -> None:
+                        closer = getattr(handle, "close", None)
+                        if not callable(closer):
+                            return
+
+                        executed = False
+
+                        def _safe_close() -> None:
+                            nonlocal executed
+                            if executed:
+                                return
+                            executed = True
+                            try:
+                                closer()
+                            except Exception:  # noqa: BLE001 - best effort cancellation
+                                logger.debug("Closing provider stream failed", exc_info=True)
+
+                        cancel_callbacks.append(_safe_close)
+                        stack.callback(_safe_close)
+
+                    def consume(response: Any) -> Iterator[str]:
+                        for chunk in response.iter_text(chunk_size=256):
+                            if not chunk:
+                                continue
+                            _record_chunk(chunk)
+                            yield chunk
+
+                    try:
+                        if stream:
+                            session = provider.generate(messages, stream=True, tools=tools, **payload)
+                            if hasattr(session, "__enter__"):
+                                response = stack.enter_context(session)
+                            else:
+                                response = session
+                            register_cancel(response)
+
+                            content_type = str(getattr(response, "headers", {}).get("content-type", "")).lower()
+                            if "text/event-stream" in content_type:
+                                for text_part in _iter_event_stream(response):
+                                    if not text_part:
+                                        continue
+                                    yield text_part
+                            else:
+                                yield from consume(response)
+                        else:
+                            response = provider.generate(messages, stream=False, tools=tools, **payload)
+                            register_cancel(response)
+                            yield from consume(response)
+                    except Exception as exc:  # noqa: BLE001 - propagate as API error
+                        message = str(exc) or exc.__class__.__name__
+                        self._record_audit(None, "provider.request.failed", summary=message, level="error")
+                        span.fail(message)
+                        raise NWAiApiError(message) from exc
+                    else:
+                        self._record_audit(
+                            None,
+                            "provider.request.succeeded",
+                            summary=f"{total_chars} characters received",
+                        )
+                    finally:
+                        cancel_callbacks.clear()
+
+            return _StreamingResult(_iterator(), cancel_callbacks, on_close=_on_stream_close)
 
     # ------------------------------------------------------------------
     # Transaction and auditing
