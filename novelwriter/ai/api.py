@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import logging
 from collections import deque
 from dataclasses import dataclass, field
@@ -375,6 +376,71 @@ class NWAiApi:
 
         def _iterator() -> Iterator[str]:
             total_chars = 0
+
+            def _iter_event_stream(response: Any) -> Iterator[str]:
+                line_iter = getattr(response, "iter_lines", None)
+                if callable(line_iter):
+                    lines = line_iter()
+                else:
+                    text_iter = getattr(response, "iter_text", None)
+                    if not callable(text_iter):
+                        return
+                    combined = "".join(part or "" for part in text_iter())
+                    lines = combined.splitlines()
+
+                event_type: str | None = None
+                data_lines: list[str] = []
+
+                def flush() -> tuple[str | None, str | None]:
+                    if not event_type:
+                        data_lines.clear()
+                        return None, None
+                    data = "\n".join(data_lines)
+                    data_lines.clear()
+                    return event_type, data
+
+                for raw in lines:
+                    if raw is None:
+                        continue
+                    if isinstance(raw, bytes):
+                        raw = raw.decode("utf-8", errors="ignore")
+                    line = raw.strip("\r")
+                    if line == "":
+                        evt, data = flush()
+                        if evt and data:
+                            yield from _consume_event(evt, data)
+                        event_type = None
+                        continue
+                    if line.startswith("event:"):
+                        event_type = line[6:].strip()
+                        continue
+                    if line.startswith("data:"):
+                        data_lines.append(line[5:].lstrip())
+                        continue
+                    data_lines.append(line)
+
+                evt, data = flush()
+                if evt and data:
+                    yield from _consume_event(evt, data)
+
+            def _consume_event(event_name: str, data: str) -> Iterator[str]:
+                lowered = event_name.lower()
+                if lowered.endswith("output_text.delta"):
+                    try:
+                        payload_obj = json.loads(data) if data else {}
+                    except json.JSONDecodeError:
+                        text_part = data
+                    else:
+                        text_part = (
+                            payload_obj.get("delta")
+                            or payload_obj.get("text")
+                            or payload_obj.get("content")
+                            or ""
+                        )
+                    if text_part:
+                        yield text_part
+                # Ignore other SSE events; the deltas already cover text output.
+
             with ExitStack() as stack:
                 def register_cancel(handle: Any) -> None:
                     closer = getattr(handle, "close", None)
@@ -409,17 +475,23 @@ class NWAiApi:
                         session = provider.generate(messages, stream=True, tools=tools, **payload)
                         if hasattr(session, "__enter__"):
                             response = stack.enter_context(session)
-                            register_cancel(response)
                         else:
                             response = session
-                            register_cancel(response)
-                        yield from consume(response)
+                        register_cancel(response)
+
+                        content_type = str(getattr(response, "headers", {}).get("content-type", "")).lower()
+                        if "text/event-stream" in content_type:
+                            for text_part in _iter_event_stream(response):
+                                if not text_part:
+                                    continue
+                                total_chars += len(text_part)
+                                yield text_part
+                        else:
+                            yield from consume(response)
                     else:
                         response = provider.generate(messages, stream=False, tools=tools, **payload)
                         register_cancel(response)
-                        text = response.text
-                        total_chars += len(text)
-                        yield text
+                        yield from consume(response)
                 except Exception as exc:  # noqa: BLE001 - propagate as API error
                     message = str(exc) or exc.__class__.__name__
                     self._record_audit(None, "provider.request.failed", summary=message, level="error")

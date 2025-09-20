@@ -14,13 +14,18 @@ from tests.tools import buildTestProject
 class FakeResponse:
     """Mimic the subset of httpx.Response used in tests."""
 
-    def __init__(self, chunks: Iterable[str]) -> None:
+    def __init__(self, chunks: Iterable[str], *, headers: dict[str, str] | None = None) -> None:
         self._chunks = [chunk for chunk in chunks]
         self.closed = False
         self.text = "".join(self._chunks)
+        self.headers = headers or {}
 
     def iter_text(self, chunk_size: int = 256) -> Iterable[str]:  # pragma: no cover - trivial generator
         return iter(self._chunks)
+
+    def iter_lines(self, chunk_size: int = 256) -> Iterable[str]:  # pragma: no cover - trivial generator
+        for chunk in self.iter_text(chunk_size=chunk_size):
+            yield from chunk.splitlines()
 
     def close(self) -> None:
         self.closed = True
@@ -32,6 +37,17 @@ class FakeStreamResponse(FakeResponse):
 
     def __exit__(self, exc_type, exc, tb) -> None:  # pragma: no cover - trivial
         self.close()
+
+class FakeSSEStream(FakeStreamResponse):
+    def __init__(self, events: Iterable[str]) -> None:
+        super().__init__([], headers={"content-type": "text/event-stream"})
+        self._events = list(events)
+
+    def iter_text(self, chunk_size: int = 256) -> Iterable[str]:  # pragma: no cover - SSE helper
+        return iter(["\n".join(self._events)])
+
+    def iter_lines(self, chunk_size: int = 256) -> Iterable[str]:  # pragma: no cover - SSE helper
+        return iter(self._events)
 
 
 class FakeProvider:
@@ -52,6 +68,23 @@ class FakeProvider:
         return response
 
 
+class FakeSSEProvider:
+    """Provider stub that emits Server-Sent Events payloads."""
+
+    def __init__(self, events: Iterable[str]) -> None:
+        self._events = list(events)
+        self.last_request: dict[str, Any] | None = None
+        self.last_response: FakeSSEStream | None = None
+
+    def generate(self, messages: List[dict[str, Any]], *, stream: bool, **kwargs: Any) -> Any:
+        self.last_request = {"messages": messages, "stream": stream, "kwargs": kwargs}
+        if not stream:
+            raise AssertionError("FakeSSEProvider only supports stream=True in tests")
+        response = FakeSSEStream(self._events)
+        self.last_response = response
+        return response
+
+
 @pytest.fixture()
 def api_with_project(projPath, mockRnd, mockGUIwithTheme):
     project = NWProject()
@@ -59,7 +92,7 @@ def api_with_project(projPath, mockRnd, mockGUIwithTheme):
     return NWAiApi(project)
 
 
-def _patch_provider(monkeypatch, api: NWAiApi, provider: FakeProvider) -> None:
+def _patch_provider(monkeypatch, api: NWAiApi, provider: Any) -> None:
     monkeypatch.setattr(api, "_ensure_provider", lambda: provider, raising=False)
 
 
@@ -87,6 +120,32 @@ def test_stream_chat_completion_yields_chunks(monkeypatch, api_with_project) -> 
     audit_operations = {entry["operation"] for entry in api_with_project.get_audit_log()}
     assert "provider.request.dispatched" in audit_operations
     assert "provider.request.succeeded" in audit_operations
+
+
+def test_stream_chat_completion_parses_event_stream(monkeypatch, api_with_project) -> None:
+    events = [
+        "event: response.output_text.delta",
+        "data: {\"delta\": \"Hello\"}",
+        "",
+        "event: response.output_text.delta",
+        "data: {\"delta\": \" world\"}",
+        "",
+        "event: response.completed",
+        "data: {}",
+        "",
+    ]
+    provider = FakeSSEProvider(events)
+    _patch_provider(monkeypatch, api_with_project, provider)
+
+    stream = api_with_project.streamChatCompletion(
+        messages=[{"role": "user", "content": "Say hello"}],
+    )
+
+    chunks = list(stream)
+
+    assert chunks == ["Hello", " world"]
+    assert provider.last_response is not None
+    assert provider.last_response.closed is True
 
 
 def test_stream_chat_completion_non_stream(monkeypatch, api_with_project) -> None:

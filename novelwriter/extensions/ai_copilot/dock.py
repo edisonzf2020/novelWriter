@@ -116,6 +116,7 @@ class AICopilotDock(QDockWidget):
         self._currentScope: str = "current_document"
         self._ai_available: bool = False
         self._availability_reason: str | None = None
+        self._current_provider_id: str | None = None
 
         self._stack = QStackedWidget(self)
         self._placeholderPage = self._build_placeholder_page()
@@ -167,12 +168,20 @@ class AICopilotDock(QDockWidget):
     def refresh_from_config(self) -> None:
         """Refresh availability state and update the UI accordingly."""
 
+        ai_config = getattr(CONFIG, "ai", None)
+        provider_id = getattr(ai_config, "provider", None)
+
         self._ai_available, self._availability_reason = self._resolve_availability()
+        provider_changed = provider_id != getattr(self, "_current_provider_id", None)
+        self._current_provider_id = provider_id
+
         self._updateScopeSelectorState()
         self._updateModelStatusState()
         if self._ai_available:
             self._stack.setCurrentIndex(self._INTERACTIVE_INDEX)
             self._ensure_request_manager()
+            if provider_changed and self._request_manager is not None and provider_id is not None:
+                self._request_manager.on_provider_changed(provider_id)
             self._toggle_interaction_enabled(not self._request_in_progress)
             self._set_status_message("ready")
         else:
@@ -558,6 +567,9 @@ class AICopilotDock(QDockWidget):
             self._modelSettingsButton.setEnabled(enabled)
         if hasattr(self, "_modelLabel") and self._modelLabel is not None:
             self._modelLabel.setEnabled(enabled)
+            provider_name = self._provider_display_name()
+            label_text = self.tr("Model:") if not provider_name else self.tr("Model ({0}):").format(provider_name)
+            self._modelLabel.setText(label_text)
         if hasattr(self, "_modelStatusFrame") and self._modelStatusFrame is not None:
             self._modelStatusFrame.setEnabled(enabled)
 
@@ -751,7 +763,33 @@ class AICopilotDock(QDockWidget):
 
     def _set_status_message(self, status_key: str) -> None:
         text = _STATUS_TEXT.get(status_key, status_key)
-        self._runStatusLabel.setText(self.tr(text))
+        base_text = self.tr(text)
+        suffix = self._provider_status_suffix()
+        if suffix:
+            base_text = f"{base_text} {suffix}"
+        self._runStatusLabel.setText(base_text)
+
+    def _provider_status_suffix(self) -> str:
+        provider_label = self._provider_display_name()
+        if not provider_label:
+            return ""
+        return self.tr("(Provider: {0})").format(provider_label)
+
+    def _provider_display_name(self) -> str:
+        provider_id = self._current_provider_id or getattr(getattr(CONFIG, "ai", None), "provider", None)
+        mapping = {
+            "openai": self.tr("OpenAI Compatible"),
+            "openai-compatible": self.tr("OpenAI Compatible"),
+            "openai_compatible": self.tr("OpenAI Compatible"),
+            "openai-sdk": self.tr("OpenAI Official SDK"),
+            "openai_sdk": self.tr("OpenAI Official SDK"),
+        }
+        if not provider_id:
+            return ""
+        return mapping.get(
+            provider_id,
+            provider_id.replace("_", " ").replace("-", " ").title(),
+        )
 
     def _compose_prompt(
         self,

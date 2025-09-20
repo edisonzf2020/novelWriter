@@ -200,6 +200,7 @@ class CopilotRequestManager(QObject):
         self._api = NWAiApi(SHARED.project)
         self._thread: Optional[QThread] = None
         self._worker: Optional[CopilotWorker] = None
+        self._provider_id: Optional[str] = getattr(CONFIG.ai, "provider", None)
 
     @property
     def api(self) -> NWAiApi:
@@ -214,6 +215,8 @@ class CopilotRequestManager(QObject):
 
     def start_request(self, payload: CopilotRequest) -> None:
         """Launch a background worker for the given request."""
+
+        self._ensure_provider_synced()
 
         if self._thread is not None:
             raise RuntimeError("A Copilot request is already running.")
@@ -237,6 +240,20 @@ class CopilotRequestManager(QObject):
         if self._worker is not None:
             self._worker.cancel()
 
+    def on_provider_changed(self, provider_id: str | None) -> None:
+        """Reset the API bridge when the configured provider changes."""
+
+        if provider_id == self._provider_id:
+            return
+        self._provider_id = provider_id
+        with suppress(Exception):
+            self._api.resetProvider()
+
+    def _ensure_provider_synced(self) -> None:
+        current = getattr(CONFIG.ai, "provider", None)
+        if current != self._provider_id:
+            self.on_provider_changed(current)
+
     def build_request(
         self,
         *,
@@ -251,6 +268,7 @@ class CopilotRequestManager(QObject):
     ) -> CopilotRequest:
         """Create a CopilotRequest using current configuration defaults."""
 
+        self._ensure_provider_synced()
         ai_config = getattr(CONFIG, "ai", None)
         max_tokens = getattr(ai_config, "max_tokens", None) if ai_config else None
         timeout = getattr(ai_config, "timeout", None) if ai_config else None

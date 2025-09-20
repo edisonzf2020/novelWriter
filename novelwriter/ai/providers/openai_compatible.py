@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any, TYPE_CHECKING
@@ -25,6 +26,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 from .base import BaseProvider, ProviderCapabilities, ProviderSettings
 
 logger = logging.getLogger(__name__)
+
+
+class _RetryResponsesAsString(Exception):
+    """Internal control flow error used to retry with string payload."""
 
 
 _RESPONSES_ENDPOINT = "/v1/responses"
@@ -65,6 +70,7 @@ class OpenAICompatibleProvider(BaseProvider):
         self._client: "httpx.Client | None" = None
         self._models_cache: list[dict[str, Any]] | None = None
         self._models_cache_fetched_at: datetime | None = None
+        self._responses_input_mode: str = "array"
 
     # ------------------------------------------------------------------
     # BaseProvider overrides
@@ -115,6 +121,7 @@ class OpenAICompatibleProvider(BaseProvider):
                 max_tokens = self._extract_output_limit(model_meta)
 
         detection_meta.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+        detection_meta.setdefault("responses_input_mode", self._responses_input_mode)
 
         return ProviderCapabilities(
             preferred_endpoint=preferred_endpoint,
@@ -126,6 +133,134 @@ class OpenAICompatibleProvider(BaseProvider):
             detected_at=datetime.now(timezone.utc),
             metadata=detection_meta,
         )
+
+    def _dispatch_chat_request(
+        self,
+        client: "httpx.Client",
+        *,
+        payload: dict[str, Any],
+        stream: bool,
+        timeout: float,
+    ) -> Any:
+        if stream:
+            return client.stream("POST", _CHAT_COMPLETIONS_ENDPOINT, json=payload, timeout=timeout)
+        return client.post(_CHAT_COMPLETIONS_ENDPOINT, json=payload, timeout=timeout)
+
+    def _stream_responses_request(
+        self,
+        client: "httpx.Client",
+        *,
+        payload: dict[str, Any],
+        timeout: float,
+        mode: str,
+    ) -> Any:
+        cm = client.stream(
+            "POST",
+            _RESPONSES_ENDPOINT,
+            json=payload,
+            timeout=timeout,
+        )
+        try:
+            response = cm.__enter__()
+        except _httpx.HTTPError as exc:  # pragma: no cover - network errors
+            raise NWAiProviderError(str(exc)) from exc
+        except Exception:
+            cm.__exit__(None, None, None)
+            raise
+
+        if response.status_code >= 400:
+            try:
+                if self._should_retry_with_string_input(response, mode=mode):
+                    cm.__exit__(None, None, None)
+                    raise _RetryResponsesAsString()
+                error_message = self._build_error_message(_RESPONSES_ENDPOINT, response)
+            finally:
+                cm.__exit__(None, None, None)
+            raise NWAiProviderError(error_message)
+
+        self._update_responses_input_mode(mode)
+
+        class _ManagedStream:
+            def __init__(self, inner_cm, inner_response):
+                self._cm = inner_cm
+                self._response = inner_response
+
+            def __enter__(self):
+                return self._response
+
+            def __exit__(self, exc_type, exc, tb):
+                return self._cm.__exit__(exc_type, exc, tb)
+
+        return _ManagedStream(cm, response)
+
+    def _send_responses_request(
+        self,
+        client: "httpx.Client",
+        *,
+        payload: dict[str, Any],
+        timeout: float,
+        mode: str,
+    ) -> "httpx.Response":
+        try:
+            response = client.post(
+                _RESPONSES_ENDPOINT,
+                json=payload,
+                timeout=timeout,
+            )
+        except _httpx.HTTPError as exc:  # pragma: no cover - network errors
+            raise NWAiProviderError(str(exc)) from exc
+
+        if response.status_code >= 400:
+            if self._should_retry_with_string_input(response, mode=mode):
+                raise _RetryResponsesAsString()
+            error_message = self._build_error_message(_RESPONSES_ENDPOINT, response)
+            raise NWAiProviderError(error_message)
+
+        self._update_responses_input_mode(mode)
+        return response
+
+    def _generate_via_responses(
+        self,
+        client: "httpx.Client",
+        messages: list[dict[str, Any]],
+        *,
+        stream: bool,
+        tools: list[dict[str, Any]] | None,
+        extra: dict[str, Any],
+        timeout: float,
+    ) -> Any:
+        last_error: str | None = None
+        for mode in self._responses_input_modes():
+            payload = self._build_responses_payload(
+                messages,
+                tools=tools,
+                stream=stream,
+                extra=dict(extra),
+                input_mode=mode,
+            )
+            try:
+                if stream:
+                    return self._stream_responses_request(
+                        client,
+                        payload=payload,
+                        timeout=timeout,
+                        mode=mode,
+                    )
+                return self._send_responses_request(
+                    client,
+                    payload=payload,
+                    timeout=timeout,
+                    mode=mode,
+                )
+            except _RetryResponsesAsString:
+                self._update_responses_input_mode("string")
+                last_error = "Server requires string payload for responses input"
+                continue
+            except NWAiProviderError as exc:
+                last_error = str(exc)
+                break
+
+        raise NWAiProviderError(last_error or "Failed to contact /v1/responses endpoint.")
 
     def generate(
         self,
@@ -142,25 +277,26 @@ class OpenAICompatibleProvider(BaseProvider):
 
         extra = dict(kwargs)
         timeout_override = extra.pop("timeout", None)
-
-        if capabilities.preferred_endpoint == "responses":
-            payload = self._build_responses_payload(messages, tools=tools, stream=stream, extra=extra)
-            url = _RESPONSES_ENDPOINT
-        else:
-            payload = self._build_chat_payload(messages, tools=tools, stream=stream, extra=extra)
-            url = _CHAT_COMPLETIONS_ENDPOINT
-
         timeout = timeout_override if timeout_override is not None else self.settings.timeout
 
         logger.debug(
             "Dispatching OpenAI-compatible request via %s (stream=%s)",
-            url,
+            capabilities.preferred_endpoint,
             stream,
         )
 
-        if stream:
-            return client.stream("POST", url, json=payload, timeout=timeout)
-        return client.post(url, json=payload, timeout=timeout)
+        if capabilities.preferred_endpoint == "responses":
+            return self._generate_via_responses(
+                client,
+                messages,
+                stream=stream,
+                tools=tools,
+                extra=extra,
+                timeout=timeout,
+            )
+
+        payload = self._build_chat_payload(messages, tools=tools, stream=stream, extra=extra)
+        return self._dispatch_chat_request(client, payload=payload, stream=stream, timeout=timeout)
 
     def list_models(self, *, force: bool = False) -> list[dict[str, Any]]:
         """Return a normalised catalogue of available models."""
@@ -509,6 +645,80 @@ class OpenAICompatibleProvider(BaseProvider):
             self._store_model_cache_entry(metadata)
         return metadata
 
+    def _responses_input_modes(self) -> list[str]:
+        mode = (self._responses_input_mode or "array").lower()
+        ordered = [mode]
+        for candidate in ("array", "string"):
+            if candidate not in ordered:
+                ordered.append(candidate)
+        return ordered
+
+    def _compose_responses_text(self, messages: list[dict[str, Any]]) -> str:
+        segments: list[str] = []
+        for message in messages:
+            role = str(message.get("role", "")).strip()
+            content = message.get("content")
+            text_parts: list[str] = []
+            if isinstance(content, str):
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, str):
+                        text_parts.append(item)
+                    elif isinstance(item, dict):
+                        value = item.get("text") or item.get("content")
+                        if isinstance(value, str):
+                            text_parts.append(value)
+            elif isinstance(content, dict):
+                value = content.get("text") or content.get("content")
+                if isinstance(value, str):
+                    text_parts.append(value)
+            if text_parts:
+                block = "\n\n".join(part.strip() for part in text_parts if part)
+                if role:
+                    segments.append(f"{role}: {block}".strip())
+                else:
+                    segments.append(block)
+        result = "\n\n".join(segment for segment in segments if segment)
+        return result or ""
+
+    def _should_retry_with_string_input(self, response: "httpx.Response", *, mode: str) -> bool:
+        if mode == "string":
+            return False
+        data = self._safe_json(response)
+        if not isinstance(data, dict):
+            return False
+        error = data.get("error")
+        if not isinstance(error, dict):
+            return False
+        message = str(error.get("message", "")).lower()
+        code = str(error.get("code", "")).lower()
+        return (
+            "invalid type" in message
+            and "input" in message
+            and "string" in message
+            and ("array" in message or code == "invalid_type")
+        )
+
+    def _update_responses_input_mode(self, mode: str) -> None:
+        if mode not in {"array", "string"}:
+            return
+        self._responses_input_mode = mode
+        if self._capabilities is None:
+            return
+        metadata = dict(self._capabilities.metadata)
+        metadata["responses_input_mode"] = mode
+        self._capabilities = ProviderCapabilities(
+            preferred_endpoint=self._capabilities.preferred_endpoint,
+            supports_responses=self._capabilities.supports_responses,
+            supports_chat_completions=self._capabilities.supports_chat_completions,
+            supports_stream=self._capabilities.supports_stream,
+            supports_tool_calls=self._capabilities.supports_tool_calls,
+            max_output_tokens=self._capabilities.max_output_tokens,
+            detected_at=self._capabilities.detected_at,
+            metadata=metadata,
+        )
+
     def _build_responses_payload(
         self,
         messages: list[dict[str, Any]],
@@ -516,11 +726,14 @@ class OpenAICompatibleProvider(BaseProvider):
         tools: list[dict[str, Any]] | None,
         stream: bool,
         extra: dict[str, Any],
+        input_mode: str | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "model": self.settings.model,
-            "input": self._adapt_messages_for_responses(messages),
-        }
+        mode = (input_mode or self._responses_input_mode or "array").lower()
+        payload: dict[str, Any] = {"model": self.settings.model}
+        if mode == "string":
+            payload["input"] = self._compose_responses_text(messages)
+        else:
+            payload["input"] = self._adapt_messages_for_responses(messages)
         if tools:
             payload["tools"] = tools
         payload.update(extra)
@@ -617,7 +830,11 @@ class OpenAICompatibleProvider(BaseProvider):
     @staticmethod
     def _safe_json(response: "httpx.Response") -> Any:
         try:
-            return response.json()
+            try:
+                return response.json()
+            except _httpx.ResponseNotRead:  # type: ignore[attr-defined]
+                response.read()
+                return response.json()
         except json.JSONDecodeError:
             return response.text
 

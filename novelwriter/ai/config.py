@@ -8,7 +8,7 @@ import os
 from configparser import ConfigParser
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from novelwriter.ai.errors import NWAiConfigError
+from novelwriter.ai.errors import NWAiConfigError, NWAiProviderError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import httpx
@@ -38,6 +38,14 @@ class _ConfigReader(Protocol):
 
 _DEF_BASE_URL = "https://api.openai.com/v1"
 _ENV_API_KEY = "OPENAI_API_KEY"
+
+_PROVIDER_SYNONYMS: dict[str, str] = {
+    "openai": "openai",
+    "openai-compatible": "openai",
+    "openai_compatible": "openai",
+    "openai-sdk": "openai-sdk",
+    "openai_sdk": "openai-sdk",
+}
 
 
 class AIConfig:
@@ -116,7 +124,9 @@ class AIConfig:
         section = self.SECTION
 
         self.enabled = reader.get_bool(section, "enabled", self.enabled)
-        self.provider = reader.get_str(section, "provider", self.provider)
+        self.provider = self._normalise_provider_id(
+            reader.get_str(section, "provider", self.provider)
+        )
         self.model = reader.get_str(section, "model", self.model)
         self.openai_base_url = reader.get_str(section, "openai_base_url", self.openai_base_url)
         self.timeout = reader.get_int(section, "timeout", self.timeout)
@@ -161,7 +171,7 @@ class AIConfig:
             conf[section] = {}
 
         conf[section]["enabled"] = str(self.enabled)
-        conf[section]["provider"] = str(self.provider)
+        conf[section]["provider"] = self._normalise_provider_id(self.provider)
         conf[section]["model"] = str(self.model)
         conf[section]["openai_base_url"] = str(self.openai_base_url)
         conf[section]["timeout"] = str(self.timeout)
@@ -245,12 +255,24 @@ class AIConfig:
 
         from novelwriter.ai.providers.factory import provider_from_config
 
-        return provider_from_config(self, transport=transport)
+        try:
+            provider = provider_from_config(self, transport=transport)
+        except NWAiProviderError as exc:
+            message = str(exc) or exc.__class__.__name__
+            self.set_availability_reason(message)
+            raise NWAiConfigError(message) from exc
+
+        self.set_availability_reason(None)
+        return provider
 
     def set_availability_reason(self, message: str | None) -> None:
         """Update availability diagnostics for UI surfaces."""
 
         self.availability_reason = self._normalise_optional(message)
+
+    def _normalise_provider_id(self, provider: str) -> str:
+        key = (provider or "openai").strip().lower()
+        return _PROVIDER_SYNONYMS.get(key, key)
 
     @staticmethod
     def _normalise_optional(value: str | None) -> str | None:

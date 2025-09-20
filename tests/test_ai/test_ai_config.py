@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 from configparser import ConfigParser
+from typing import Any
+
 import httpx
 import pytest
 
 from novelwriter.ai.config import AIConfig
-from novelwriter.ai.errors import NWAiConfigError
+from novelwriter.ai.errors import NWAiConfigError, NWAiProviderError
 from novelwriter.ai.providers import OpenAICompatibleProvider
 from novelwriter.common import NWConfigParser
-
 
 def test_ai_config_defaults() -> None:
     cfg = AIConfig()
@@ -166,3 +167,39 @@ def test_ai_config_create_provider_unknown_provider_raises() -> None:
 
     with pytest.raises(NWAiConfigError):
         cfg.create_provider()
+
+
+def test_ai_config_normalises_provider_identifier() -> None:
+    parser = ConfigParser()
+    parser[AIConfig.SECTION] = {"provider": "openai_sdk"}
+
+    cfg = AIConfig()
+    cfg.load_from_main_config(parser)
+
+    assert cfg.provider == "openai-sdk"
+
+    out = ConfigParser()
+    cfg.save_to_main_config(out)
+    assert out.get("AI", "provider") == "openai-sdk"
+
+
+def test_ai_config_create_provider_wraps_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AIConfig()
+    cfg.enabled = True
+    cfg.api_key = "token"
+    cfg.model = "gpt-4o"
+
+    def _raise(*args: Any, **kwargs: Any) -> None:  # noqa: ANN001 - signature matches provider factory
+        raise NWAiProviderError("missing dependency")
+
+    monkeypatch.setattr(
+        "novelwriter.ai.providers.factory.provider_from_config",
+        _raise,
+        raising=True,
+    )
+
+    with pytest.raises(NWAiConfigError) as exc:
+        cfg.create_provider()
+
+    assert "missing dependency" in str(exc.value)
+    assert cfg.availability_reason == "missing dependency"

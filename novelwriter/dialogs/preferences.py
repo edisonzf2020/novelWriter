@@ -24,6 +24,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 """  # noqa
 from __future__ import annotations
 
+import importlib.util
 import logging
 
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
@@ -882,11 +883,15 @@ class GuiPreferences(NDialog):
         self.aiDisabledMessage.setObjectName("aiDisabledMessage")
         self.mainForm.addRow(None, self.aiDisabledMessage)
 
+        if not hasattr(self, "_openai_sdk_available"):
+            self._openai_sdk_available = self._probe_openai_sdk()
+
         self.aiProvider = NComboBox(self)
         self.aiProvider.setObjectName("aiProviderCombo")
         self.aiProvider.setMinimumWidth(220)
         provider_options = [
             (self.tr("OpenAI Compatible"), "openai"),
+            (self.tr("OpenAI Official SDK"), "openai-sdk"),
         ]
         seen_values = {value for _, value in provider_options}
         provider_current = getattr(ai_config, "provider", "openai")
@@ -894,11 +899,35 @@ class GuiPreferences(NDialog):
             provider_options.append((provider_current.title(), provider_current))
         for label, value in provider_options:
             self.aiProvider.addItem(label, value)
-        self.aiProvider.setCurrentData(provider_current, "openai")
+        self.aiProvider.currentIndexChanged.connect(self._on_ai_provider_changed)
+        if self.aiProvider.findData(provider_current) >= 0:
+            self.aiProvider.setCurrentData(provider_current, "openai")
+        else:
+            self.aiProvider.setCurrentIndex(0)
+        if not self._openai_sdk_available:
+            sdk_index = self.aiProvider.findData("openai-sdk")
+            if sdk_index >= 0:
+                model = self.aiProvider.model()
+                item_getter = getattr(model, "item", None)
+                tooltip = self.tr("Install the official OpenAI SDK to enable this provider.")
+                if callable(item_getter):
+                    qitem = model.item(sdk_index)
+                    if qitem is not None:
+                        qitem.setEnabled(False)
+                        qitem.setToolTip(tooltip)
+                else:
+                    self.aiProvider.setItemData(sdk_index, False, Qt.ItemDataRole.UserRole)
+                    self.aiProvider.setItemData(sdk_index, tooltip, Qt.ItemDataRole.ToolTipRole)
         self.mainForm.addRow(
             self.tr("Provider"), self.aiProvider,
             self.tr("Select the AI provider or compatibility mode."), stretch=(3, 2)
         )
+
+        self.aiProviderAvailability = NColorLabel("", self, color=SHARED.theme.helpText, wrap=True)
+        self.aiProviderAvailability.setObjectName("aiProviderAvailabilityLabel")
+        self.aiProviderAvailability.setVisible(False)
+        self.mainForm.addRow(None, self.aiProviderAvailability)
+        self._update_provider_availability_message()
 
         self.aiBaseUrl = QLineEdit(self)
         self.aiBaseUrl.setObjectName("aiBaseUrlEdit")
@@ -1090,13 +1119,15 @@ class GuiPreferences(NDialog):
 
     def _update_ai_controls(self, state: bool) -> None:
         """Enable or disable AI configuration inputs based on switch state."""
-        # Check if AI is available
+
         ai_config = CONFIG.ai
-        ai_available = not hasattr(ai_config, '_reason')
-        
-        enabled = bool(state) and ai_available
+        ai_available = not hasattr(ai_config, "_reason")
+        provider_id = self.aiProvider.currentData()
+        provider_available = self._provider_is_available(provider_id)
+
+        base_enabled = bool(state) and ai_available and provider_available
+
         controls = [
-            self.aiProvider,
             self.aiBaseUrl,
             self.aiTimeout,
             self.aiMaxTokens,
@@ -1104,29 +1135,60 @@ class GuiPreferences(NDialog):
             self.aiAskBeforeApply,
         ]
         for widget in controls:
-            widget.setEnabled(enabled)
+            widget.setEnabled(base_enabled)
 
-        self.aiApiKey.setEnabled(enabled and not self.aiApiKeyEnvOverride)
-        
-        # Show different messages based on availability
+        self.aiProvider.setEnabled(bool(state) and ai_available)
+        self.aiApiKey.setEnabled(base_enabled and not self.aiApiKeyEnvOverride)
+
+        if hasattr(self, "aiTestButton"):
+            self.aiTestButton.setEnabled(base_enabled)
+        if hasattr(self, "aiModelSelector"):
+            self.aiModelSelector.setEnabled(base_enabled)
+
         if not ai_available:
             self.aiDisabledMessage.setText(
                 self.tr("AI features are not available. Please install the AI dependencies.")
             )
             self.aiDisabledMessage.setVisible(True)
-            self.aiEnabled.setEnabled(False)  # Disable the switch if AI is not available
+            self.aiEnabled.setEnabled(False)
         else:
-            self.aiDisabledMessage.setText(
-                self.tr("AI Copilot is disabled. Enable the switch above to configure providers.")
-            )
-            self.aiDisabledMessage.setVisible(not enabled)
             self.aiEnabled.setEnabled(True)
-        
-        # Update test button and model selector
-        if hasattr(self, 'aiTestButton'):
-            self.aiTestButton.setEnabled(enabled)
-        if hasattr(self, 'aiModelSelector'):
-            self.aiModelSelector.setEnabled(enabled)
+            if not state:
+                self.aiDisabledMessage.setText(
+                    self.tr("AI Copilot is disabled. Enable the switch above to configure providers.")
+                )
+                self.aiDisabledMessage.setVisible(True)
+            else:
+                self.aiDisabledMessage.setVisible(False)
+
+        self._update_provider_availability_message()
+
+    def _provider_is_available(self, provider_id: str | None) -> bool:
+        provider = (provider_id or "").strip().lower()
+        if provider in {"openai-sdk", "openai_sdk"}:
+            return bool(getattr(self, "_openai_sdk_available", False))
+        return True
+
+    def _probe_openai_sdk(self) -> bool:
+        return importlib.util.find_spec("openai") is not None
+
+    def _update_provider_availability_message(self) -> None:
+        provider_id = self.aiProvider.currentData()
+        sdk_available = getattr(self, "_openai_sdk_available", False)
+        if provider_id in {"openai-sdk", "openai_sdk"} and not sdk_available:
+            message = self.tr(
+                "Install the official OpenAI SDK (pip install novelWriter[ai]) to enable this provider."
+            )
+            self.aiProviderAvailability.setText(message)
+            self.aiProviderAvailability.setVisible(True)
+        else:
+            self.aiProviderAvailability.clear()
+            self.aiProviderAvailability.setVisible(False)
+
+    @pyqtSlot(int)
+    def _on_ai_provider_changed(self, _index: int) -> None:
+        self._update_provider_availability_message()
+        self._update_ai_controls(self.aiEnabled.isChecked())
 
     @pyqtSlot()
     def _test_ai_connection(self) -> None:

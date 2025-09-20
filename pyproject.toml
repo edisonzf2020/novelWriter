@@ -34,6 +34,10 @@ dynamic = ["version"]
 [project.optional-dependencies]
 ai = [
     "httpx>=0.28,<0.29",
+    "openai>=1.0,<2.0",
+]
+ai-openai = [
+    "openai>=1.0,<2.0",
 ]
 
 [project.urls]
@@ -146,6 +150,7 @@ markers = [
     "base: Base classes tests",
     "core: Core classes tests",
     "gui: GUI classes tests",
+    "compat: OpenAI-compatible live endpoint tests",
 ]
 
 [tool.coverage.run]

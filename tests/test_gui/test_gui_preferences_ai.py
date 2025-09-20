@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QLabel, QDockWidget, QPushButton
 
 from novelwriter import CONFIG, SHARED
@@ -19,6 +20,11 @@ from novelwriter.extensions.ai_copilot import AICopilotDock
 def test_preferences_ai_updates_configuration(qtbot, monkeypatch, nwGUI) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(CONFIG, "_ai_config", AIConfig(), raising=False)
+    monkeypatch.setattr(
+        "novelwriter.dialogs.preferences.importlib.util.find_spec",
+        lambda name: None,
+        raising=False,
+    )
 
     ai_config = CONFIG.ai
     ai_config.enabled = False
@@ -31,10 +37,32 @@ def test_preferences_ai_updates_configuration(qtbot, monkeypatch, nwGUI) -> None
     assert dialog.aiEnabled.isChecked() is False
     assert dialog.aiProvider.isEnabled() is False
     assert dialog.aiDisabledMessage.isVisible() is True
+    assert dialog.aiProviderAvailability.isVisible() is False
+
+    sdk_index = dialog.aiProvider.findData("openai-sdk")
+    assert sdk_index >= 0
+    model = dialog.aiProvider.model()
+    item_getter = getattr(model, "item", None)
+    if callable(item_getter):
+        item = model.item(sdk_index)
+        assert item is not None and item.isEnabled() is False
+    else:
+        assert dialog.aiProvider.itemData(sdk_index, Qt.ItemDataRole.UserRole) is False
 
     dialog.aiEnabled.setChecked(True)
     assert dialog.aiProvider.isEnabled() is True
     assert dialog.aiDisabledMessage.isVisible() is False
+    assert dialog.aiProviderAvailability.isVisible() is False
+
+    dialog.aiProvider.setCurrentIndex(sdk_index)
+    qtbot.wait(10)
+    assert dialog.aiProviderAvailability.isVisible() is True
+    assert "OpenAI" in dialog.aiProviderAvailability.text()
+    assert dialog.aiBaseUrl.isEnabled() is False
+
+    dialog.aiProvider.setCurrentIndex(dialog.aiProvider.findData("openai"))
+    qtbot.wait(10)
+    assert dialog.aiProviderAvailability.isVisible() is False
 
     dialog.aiBaseUrl.setText("https://example.test/v1")
     dialog.aiTimeout.setValue(55)
@@ -70,6 +98,11 @@ def test_preferences_ai_updates_configuration(qtbot, monkeypatch, nwGUI) -> None
 def test_preferences_ai_env_override_disables_key(qtbot, monkeypatch, nwGUI) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
     monkeypatch.setattr(CONFIG, "_ai_config", AIConfig(), raising=False)
+    monkeypatch.setattr(
+        "novelwriter.dialogs.preferences.importlib.util.find_spec",
+        lambda name: None,
+        raising=False,
+    )
 
     ai_config = CONFIG.ai
     ai_config.load_from_main_config(NWConfigParser())
@@ -93,6 +126,11 @@ def test_preferences_ai_test_connection_populates_models(qtbot, monkeypatch, nwG
     """The connection test should refresh the available models list."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(CONFIG, "_ai_config", AIConfig(), raising=False)
+    monkeypatch.setattr(
+        "novelwriter.dialogs.preferences.importlib.util.find_spec",
+        lambda name: None,
+        raising=False,
+    )
 
     ai_config = CONFIG.ai
     ai_config.enabled = True

@@ -1,0 +1,48 @@
+schema: 1
+story: "3.2"
+story_title: "引入 OpenAI 官方 Python SDK Provider"
+gate: PASS
+status_reason: "官方 SDK Provider 与配置/UI 已联动，AC1-AC5 全部满足。"
+reviewer: "Quinn (Test Architect)"
+updated: "2025-09-20T20:06:39+08:00"
+
+top_issues: []
+
+waiver: { active: false }
+
+quality_score: 95
+
+evidence:
+  tests_reviewed: 6
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: "维持 API 密钥与可选依赖策略，无新增暴露面。"
+  performance:
+    status: PASS
+    notes: "官方 SDK 与 HTTP Provider 皆保留缓存与超时控制。"
+  reliability:
+    status: PASS
+    notes: "Responses 失败自动回退至 Chat，新增单元/GUI 测试验证。"
+  maintainability:
+    status: PASS
+    notes: "配置、UI、文档同步更新并具备依赖缺失诊断提示。"
+
+recommendations:
+  immediate: []
+  future:
+    - action: "同步 Story 状态为 Done，并在对外说明中标注官方 SDK 依赖安装方式"
+      refs:
+        - "docs/stories/3.2.openai-official-sdk-integration.md:1-48"
+
+risk_summary:
+  totals: { critical: 0, high: 0, medium: 0, low: 1 }
+  recommendations:
+    must_fix: []
+    monitor:
+      - "持续跟踪用户沟通材料与配置默认值的一致性"

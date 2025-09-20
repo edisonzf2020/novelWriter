@@ -215,3 +215,28 @@ def test_ai_copilot_quick_actions_present(monkeypatch, nwGUI):
         assert button is not None
         assert button.isEnabled()
     dock.deleteLater()
+
+
+@pytest.mark.gui
+def test_ai_copilot_status_shows_provider(monkeypatch, nwGUI) -> None:
+    dummy_config = SimpleNamespace(
+        ai=SimpleNamespace(
+            enabled=True,
+            api_key="token",
+            api_key_from_env=False,
+            provider="openai-sdk",
+        )
+    )
+    monkeypatch.setattr(
+        "novelwriter.extensions.ai_copilot.dock.CONFIG",
+        dummy_config,
+        raising=False,
+    )
+
+    dock = AICopilotDock(nwGUI)
+
+    status_label = dock.findChild(QLabel, "aiCopilotStatusMessage")
+    assert status_label is not None
+    assert "OpenAI Official SDK" in status_label.text()
+
+    dock.deleteLater()

@@ -26,7 +26,9 @@ def _make_transport(responses: dict[str, list[httpx.Response]]) -> httpx.MockTra
             raise AssertionError(f"Unexpected path {path}")
         if path == "/v1/responses":
             payload = json.loads(request.content.decode())
-            assert payload.get("metadata", {}).get("origin") == "novelwriter-capability-probe"
+            metadata = payload.get("metadata")
+            if metadata:
+                assert metadata.get("origin") == "novelwriter-capability-probe"
         return bucket[min(counter[path] - 1, len(bucket) - 1)]
 
     transport = httpx.MockTransport(handler)
@@ -177,6 +179,61 @@ def test_openai_provider_refresh_forces_new_detection() -> None:
     assert counts["/v1/responses"] == 2
     assert counts["/v1/chat/completions"] >= 2
     assert counts["/v1/models/test-model"] >= 2
+
+
+def test_openai_provider_responses_fallbacks_to_string_input() -> None:
+    responses = {
+        "/v1/responses": [
+            httpx.Response(200, json={"id": "resp_probe", "usage": {"output_tokens": 1}}),
+            httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": "Invalid type for 'input': expected string, but got array.",
+                        "code": "invalid_type",
+                    }
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "id": "resp_success",
+                    "output": [
+                        {
+                            "content": [
+                                {"type": "output_text", "text": "pong"},
+                            ]
+                        }
+                    ],
+                },
+            ),
+        ],
+        "/v1/chat/completions": [
+            httpx.Response(200, json={"id": "chat_meta", "usage": {"completion_tokens": 1}}),
+        ],
+        "/v1/models/test-model": [
+            httpx.Response(200, json={"id": "test-model", "output_token_limit": 2048}),
+        ],
+    }
+
+    transport = _make_transport(responses)
+    settings = ProviderSettings(
+        base_url="https://mock.local",
+        api_key="test-key",
+        model="test-model",
+        transport=transport,
+    )
+    provider = OpenAICompatibleProvider(settings)
+    provider.ensure_capabilities()
+
+    response = provider.generate([
+        {"role": "user", "content": "Say hello"},
+    ])
+
+    assert response.status_code == 200
+    assert provider._responses_input_mode == "string"
+    counts = transport.call_count  # type: ignore[attr-defined]
+    assert counts["/v1/responses"] == 3
 
 
 def _assert_responses_capabilities(capabilities: ProviderCapabilities) -> None:

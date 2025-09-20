@@ -3,3 +3,4 @@ isort
 pyright
 ruff
 httpx>=0.28,<0.29
+openai>=1.0,<2.0

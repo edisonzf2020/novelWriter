@@ -79,3 +79,5 @@ ToC.txt
 
 flattened-codebase.xml
 flattened-codebase.stats.md
+
+*.env

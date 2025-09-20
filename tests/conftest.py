@@ -21,6 +21,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import sys
 
@@ -44,6 +45,78 @@ _TST_ROOT = Path(__file__).parent
 _SRC_ROOT = _TST_ROOT.parent
 _TMP_ROOT = _TST_ROOT / "temp"
 _TMP_CONF = _TMP_ROOT / "conf"
+
+_COMPAT_ENV_VARS = (
+    "NOVELWRITER_COMPAT_BASE",
+    "NOVELWRITER_COMPAT_KEY",
+    "NOVELWRITER_COMPAT_MODEL",
+)
+_COMPAT_ENV_READY = False
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--compat-env-file",
+        action="store",
+        default=None,
+        help=(
+            "Path to a file containing NOVELWRITER_COMPAT_* variables for"
+            " OpenAI-compatible live endpoint tests."
+        ),
+    )
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key:
+            continue
+        if value is None:
+            value = ""
+        value = value.strip()
+        os.environ.setdefault(key, value)
+
+
+def _compat_env_configured() -> bool:
+    return all(os.getenv(var) for var in _COMPAT_ENV_VARS)
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    global _COMPAT_ENV_READY
+
+    config = session.config
+    env_file = config.getoption("compat_env_file")
+    if not env_file:
+        env_file = os.getenv("NOVELWRITER_COMPAT_ENV_FILE")
+    if env_file:
+        path = Path(env_file).expanduser()
+        if path.is_file():
+            _load_env_file(path)
+        else:
+            logging.getLogger("novelwriter.tests").warning(
+                "Compatibility env file not found: %s", path
+            )
+    _COMPAT_ENV_READY = _compat_env_configured()
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if _COMPAT_ENV_READY:
+        return
+
+    skip_reason = (
+        "Compatibility environment not configured. Provide NOVELWRITER_COMPAT_* "
+        "variables or --compat-env-file when running compat-marked tests."
+    )
+    skip_marker = pytest.mark.skip(reason=skip_reason)
+    for item in items:
+        if "compat" in item.keywords:
+            item.add_marker(skip_marker)
 
 
 ##
