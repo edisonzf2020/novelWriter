@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from configparser import ConfigParser
@@ -50,12 +51,14 @@ class AIConfig:
         "api_key",
         "timeout",
         "max_tokens",
+        "temperature",
         "dry_run_default",
         "ask_before_apply",
         "openai_organisation",
         "extra_headers",
         "user_agent",
         "availability_reason",
+        "default_model_metadata",
         "_api_key_from_env",
     )
 
@@ -69,12 +72,14 @@ class AIConfig:
         self.api_key: str = ""
         self.timeout: int = 30
         self.max_tokens: int = 2048
+        self.temperature: float = 0.7
         self.dry_run_default: bool = True
         self.ask_before_apply: bool = True
         self.openai_organisation: str | None = None
         self.extra_headers: dict[str, str] | None = None
         self.user_agent: str | None = None
         self.availability_reason: str | None = None
+        self.default_model_metadata: dict[str, Any] | None = None
         self._api_key_from_env: bool = False
 
     @property
@@ -116,6 +121,7 @@ class AIConfig:
         self.openai_base_url = reader.get_str(section, "openai_base_url", self.openai_base_url)
         self.timeout = reader.get_int(section, "timeout", self.timeout)
         self.max_tokens = reader.get_int(section, "max_tokens", self.max_tokens)
+        self.temperature = reader.get_float(section, "temperature", self.temperature)
         self.dry_run_default = reader.get_bool(section, "dry_run_default", self.dry_run_default)
         self.ask_before_apply = reader.get_bool(section, "ask_before_apply", self.ask_before_apply)
         self.openai_organisation = self._normalise_optional(
@@ -126,6 +132,9 @@ class AIConfig:
         )
         self.extra_headers = self._parse_header_entries(
             reader.get_str(section, "extra_headers", "")
+        )
+        self.default_model_metadata = self._parse_model_metadata(
+            reader.get_str(section, "default_model_metadata", "")
         )
         self.availability_reason = None
 
@@ -157,6 +166,7 @@ class AIConfig:
         conf[section]["openai_base_url"] = str(self.openai_base_url)
         conf[section]["timeout"] = str(self.timeout)
         conf[section]["max_tokens"] = str(self.max_tokens)
+        conf[section]["temperature"] = str(self.temperature)
         conf[section]["dry_run_default"] = str(self.dry_run_default)
         conf[section]["ask_before_apply"] = str(self.ask_before_apply)
 
@@ -175,6 +185,12 @@ class AIConfig:
             conf[section]["extra_headers"] = headers_serialised
         elif conf.has_option(section, "extra_headers"):
             conf.remove_option(section, "extra_headers")
+
+        metadata_serialised = self._serialise_model_metadata(self.default_model_metadata)
+        if metadata_serialised:
+            conf[section]["default_model_metadata"] = metadata_serialised
+        elif conf.has_option(section, "default_model_metadata"):
+            conf.remove_option(section, "default_model_metadata")
 
         if self._api_key_from_env:
             if conf.has_option(section, "api_key"):
@@ -265,6 +281,28 @@ class AIConfig:
             return ""
         return "; ".join(f"{key}: {value}" for key, value in headers.items())
 
+    @staticmethod
+    def _parse_model_metadata(raw: str) -> dict[str, Any] | None:
+        if not raw.strip():
+            return None
+        try:
+            metadata = json.loads(raw)
+            if isinstance(metadata, dict):
+                return metadata
+        except json.JSONDecodeError:
+            logger.warning("Invalid JSON in model metadata configuration")
+        return None
+
+    @staticmethod
+    def _serialise_model_metadata(metadata: dict[str, Any] | None) -> str:
+        if not metadata:
+            return ""
+        try:
+            return json.dumps(metadata, separators=(',', ':'))
+        except (TypeError, ValueError):
+            logger.warning("Failed to serialize model metadata")
+            return ""
+
 
 class _ReaderFacade:
     """Compatibility wrapper around :class:`ConfigParser` variants."""
@@ -298,6 +336,23 @@ class _ReaderFacade:
             return self._conf.getint(section, option, fallback=default)
         except ValueError:
             logger.warning("Invalid integer for '%s:%s' in AI config", section, option)
+            return default
+
+    def get_float(self, section: str, option: str, default: float) -> float:
+        reader = getattr(self._conf, "rdFloat", None)
+        if callable(reader):
+            return cast(float, reader(section, option, default))
+        try:
+            # Check if the config object has getfloat method
+            conf_obj = getattr(self._conf, 'getfloat', None)
+            if conf_obj and callable(conf_obj):
+                return conf_obj(section, option, fallback=default)
+            else:
+                # Fallback for configs that don't have getfloat
+                raw_value = self._conf.get(section, option, fallback=str(default))
+                return float(raw_value)
+        except (ValueError, TypeError):
+            logger.warning("Invalid float for '%s:%s' in AI config", section, option)
             return default
 
     def get_str_list(self, section: str, option: str, default: list[str]) -> list[str]:  # pragma: no cover

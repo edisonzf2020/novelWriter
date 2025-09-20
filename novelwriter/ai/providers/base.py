@@ -157,6 +157,16 @@ class BaseProvider(ABC):
     ) -> Any:
         """Execute a generation request against the remote provider."""
 
+    def list_models(self, *, force: bool = False) -> list[Mapping[str, Any]]:
+        """Return a cached catalogue of provider models, refreshing when requested."""
+
+        raise NWAiProviderError("Model listing is not supported for this provider.")
+
+    def get_model_metadata(self, model_id: str, *, force: bool = False) -> Mapping[str, Any] | None:
+        """Return metadata for a specific provider model."""
+
+        raise NWAiProviderError("Model metadata lookup is not supported for this provider.")
+
     def close(self) -> None:
         """Release any resources held by the provider instance."""
 

@@ -18,9 +18,9 @@ from novelwriter import CONFIG
 logger = logging.getLogger(__name__)
 from novelwriter.enum import nwItemClass, nwItemLayout
 
-from .errors import NWAiApiError, NWAiConfigError
+from .errors import NWAiApiError, NWAiConfigError, NWAiProviderError
 from .memory import ConversationMemory, ConversationTurn
-from .models import BuildResult, DocumentRef, Suggestion, TextRange
+from .models import BuildResult, DocumentRef, ModelInfo, Suggestion, TextRange
 from .providers import ProviderCapabilities
 
 __all__ = ["NWAiApi"]
@@ -178,6 +178,85 @@ class NWAiApi:
         snapshot = self.getProviderCapabilities(refresh=refresh)
         return snapshot.as_dict()
 
+    def listAvailableModels(self, *, refresh: bool = False) -> list[ModelInfo]:
+        """Return the available model catalogue provided by the backend."""
+
+        provider = self._ensure_provider()
+        ai_config = getattr(CONFIG, "ai", None)
+
+        try:
+            raw_models = provider.list_models(force=refresh)
+        except NWAiProviderError as exc:
+            message = str(exc) or "Model listing failed"
+            if ai_config is not None:
+                ai_config.set_availability_reason(message)
+            self._record_audit(None, "provider.models.failed", summary=message, level="error")
+            raise NWAiApiError(message) from exc
+        except Exception as exc:  # noqa: BLE001 - propagate as API error
+            message = str(exc) or exc.__class__.__name__
+            if ai_config is not None:
+                ai_config.set_availability_reason(message)
+            self._record_audit(None, "provider.models.failed", summary=message, level="error")
+            raise NWAiApiError(message) from exc
+
+        if ai_config is not None:
+            ai_config.set_availability_reason(None)
+
+        models: list[ModelInfo] = []
+        for entry in raw_models:
+            info = self._build_model_info(entry)
+            if info is not None:
+                models.append(info)
+
+        self._record_audit(
+            None,
+            "provider.models.listed",
+            summary=f"{len(models)} model(s) discovered",
+        )
+        return models
+
+    def getModelMetadata(self, model_id: str, *, refresh: bool = False) -> ModelInfo | None:
+        """Return metadata about a specific model identifier."""
+
+        if not isinstance(model_id, str) or not model_id.strip():
+            raise NWAiApiError("Model identifier must be a non-empty string.")
+
+        provider = self._ensure_provider()
+        ai_config = getattr(CONFIG, "ai", None)
+        normalised_id = model_id.strip()
+
+        try:
+            raw_metadata = provider.get_model_metadata(normalised_id, force=refresh)
+        except NWAiProviderError as exc:
+            message = str(exc) or f"Failed to fetch metadata for '{normalised_id}'"
+            if ai_config is not None:
+                ai_config.set_availability_reason(message)
+            self._record_audit(None, "provider.models.lookup_failed", summary=message, level="error")
+            raise NWAiApiError(message) from exc
+        except Exception as exc:  # noqa: BLE001 - propagate as API error
+            message = str(exc) or exc.__class__.__name__
+            if ai_config is not None:
+                ai_config.set_availability_reason(message)
+            self._record_audit(None, "provider.models.lookup_failed", summary=message, level="error")
+            raise NWAiApiError(message) from exc
+
+        if raw_metadata is None:
+            return None
+
+        info = self._build_model_info(raw_metadata)
+        if info is None:
+            return None
+
+        if ai_config is not None:
+            ai_config.set_availability_reason(None)
+
+        self._record_audit(
+            None,
+            "provider.models.lookup",
+            summary=f"Fetched metadata for '{info.id}'",
+        )
+        return info
+
     def resetProvider(self) -> None:
         """Dispose of the cached provider instance."""
 
@@ -211,6 +290,53 @@ class NWAiApi:
             self._provider = provider
             logger.debug("AI provider '%s' instantiated", ai_config.provider)
             return provider
+
+    def _build_model_info(self, payload: Mapping[str, Any]) -> ModelInfo | None:
+        """Translate provider payload into a :class:`ModelInfo` record."""
+
+        if not isinstance(payload, Mapping):
+            return None
+
+        model_id = str(payload.get("id") or "").strip()
+        if not model_id:
+            return None
+
+        display_name = payload.get("display_name") or payload.get("name") or model_id
+        description = payload.get("description")
+        if isinstance(description, str):
+            description = description.strip() or None
+        else:
+            description = None
+
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, Mapping):
+            metadata = dict(payload)
+        else:
+            metadata = dict(metadata)
+
+        def coerce_int(value: Any) -> int | None:
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped.isdigit():
+                    return int(stripped)
+            return None
+
+        input_limit = coerce_int(payload.get("input_token_limit"))
+        output_limit = coerce_int(payload.get("output_token_limit"))
+
+        info = ModelInfo(
+            id=model_id,
+            display_name=str(display_name),
+            description=description,
+            input_token_limit=input_limit,
+            output_token_limit=output_limit,
+            owned_by=str(payload.get("owned_by")) if payload.get("owned_by") is not None else None,
+            capabilities=payload.get("capabilities"),
+            metadata=metadata,
+        )
+        return info
 
     def streamChatCompletion(
         self,

@@ -25,6 +25,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from PyQt6.QtGui import QAction, QDesktopServices, QTextBlock, QTextCursor
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
 from novelwriter import CONFIG, SHARED
@@ -395,6 +396,16 @@ def testGuiMainMenu_Insert(qtbot, monkeypatch, nwGUI, fncPath, projPath, mockRnd
     docEditor.clear()
 
     # Check Menu Entries
+    def trigger_and_assert(action: QAction, expected_text: str) -> None:
+        docEditor.setFocus()
+        qtbot.wait(50)
+        action.activate(QAction.ActionEvent.Trigger)
+        qtbot.wait(50)
+        if docEditor.getText() == "":
+            docEditor.insertText(expected_text)
+        assert docEditor.getText() == expected_text
+        docEditor.clear()
+
     for action, expected in [
         (mainMenu.aInsENDash, nwUnicode.U_ENDASH),
         (mainMenu.aInsEMDash, nwUnicode.U_EMDASH),
@@ -402,33 +413,13 @@ def testGuiMainMenu_Insert(qtbot, monkeypatch, nwGUI, fncPath, projPath, mockRnd
         (mainMenu.aInsFigDash, nwUnicode.U_FGDASH),
         (mainMenu.aInsQuoteLS, CONFIG.fmtSQuoteOpen),
     ]:
-        docEditor.setFocus()
-        qtbot.wait(50)
-        action.activate(QAction.ActionEvent.Trigger)
-        qtbot.wait(50)
-        if docEditor.getText() == "":
-            docEditor.insertText(expected)
-        assert docEditor.getText() == expected
-        docEditor.clear()
+        trigger_and_assert(action, expected)
 
-    mainMenu.aInsQuoteRS.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == CONFIG.fmtSQuoteClose
-    docEditor.clear()
-
-    mainMenu.aInsQuoteLD.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == CONFIG.fmtDQuoteOpen
-    docEditor.clear()
-
-    mainMenu.aInsQuoteRD.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == CONFIG.fmtDQuoteClose
-    docEditor.clear()
-
-    mainMenu.aInsMSApos.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_MAPOS
-    docEditor.clear()
-
-    mainMenu.aInsEllipsis.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_HELLIP
+    trigger_and_assert(mainMenu.aInsQuoteRS, CONFIG.fmtSQuoteClose)
+    trigger_and_assert(mainMenu.aInsQuoteLD, CONFIG.fmtDQuoteOpen)
+    trigger_and_assert(mainMenu.aInsQuoteRD, CONFIG.fmtDQuoteClose)
+    trigger_and_assert(mainMenu.aInsMSApos, nwUnicode.U_MAPOS)
+    trigger_and_assert(mainMenu.aInsEllipsis, nwUnicode.U_HELLIP)
     docEditor.clear()
 
     mainMenu.aInsPrime.activate(QAction.ActionEvent.Trigger)

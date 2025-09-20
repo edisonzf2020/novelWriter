@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, TYPE_CHECKING
 
 from novelwriter.ai.errors import NWAiProviderError
@@ -28,8 +29,10 @@ logger = logging.getLogger(__name__)
 
 _RESPONSES_ENDPOINT = "/v1/responses"
 _CHAT_COMPLETIONS_ENDPOINT = "/v1/chat/completions"
+_MODELS_COLLECTION_ENDPOINT = "/v1/models"
 _MODELS_ENDPOINT = "/v1/models/{model}"
 
+_MODEL_CACHE_TTL = timedelta(seconds=300)
 _DETECTION_TIMEOUT = _httpx.Timeout(10.0) if _httpx is not None else None
 _USER_AGENT = "novelWriter-AI-Provider/1.0"
 
@@ -60,6 +63,8 @@ class OpenAICompatibleProvider(BaseProvider):
 
         super().__init__(settings)
         self._client: "httpx.Client | None" = None
+        self._models_cache: list[dict[str, Any]] | None = None
+        self._models_cache_fetched_at: datetime | None = None
 
     # ------------------------------------------------------------------
     # BaseProvider overrides
@@ -157,12 +162,41 @@ class OpenAICompatibleProvider(BaseProvider):
             return client.stream("POST", url, json=payload, timeout=timeout)
         return client.post(url, json=payload, timeout=timeout)
 
+    def list_models(self, *, force: bool = False) -> list[dict[str, Any]]:
+        """Return a normalised catalogue of available models."""
+
+        client = self._ensure_client()
+        if not force and self._models_cache is not None and self._models_cache_fetched_at is not None:
+            if datetime.now(timezone.utc) - self._models_cache_fetched_at <= _MODEL_CACHE_TTL:
+                return [copy.deepcopy(entry) for entry in self._models_cache]
+
+        models = self._request_model_list(client)
+        self._models_cache = [copy.deepcopy(entry) for entry in models]
+        self._models_cache_fetched_at = datetime.now(timezone.utc)
+        return [copy.deepcopy(entry) for entry in self._models_cache]
+
+    def get_model_metadata(self, model_id: str, *, force: bool = False) -> dict[str, Any] | None:
+        """Return metadata for a single model identifier."""
+
+        client = self._ensure_client()
+        if not force:
+            cached = self._get_cached_model(model_id)
+            if cached is not None:
+                return cached
+
+        metadata = self._request_model_metadata(client, model_id)
+        if metadata is not None:
+            self._store_model_cache_entry(metadata)
+        return metadata
+
 
     def close(self) -> None:
         client = self._client
         if client is not None:
             client.close()
             self._client = None
+        self._models_cache = None
+        self._models_cache_fetched_at = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -201,6 +235,150 @@ class OpenAICompatibleProvider(BaseProvider):
             transport=self.settings.transport,
         )
         return self._client
+
+    def _request_model_list(self, client: "httpx.Client") -> list[dict[str, Any]]:
+        if _httpx is None:
+            raise NWAiProviderError(
+                "OpenAI-compatible provider requires the optional dependency 'httpx'."
+            )
+        try:
+            response = client.get(_MODELS_COLLECTION_ENDPOINT, timeout=_DETECTION_TIMEOUT)
+        except _httpx.HTTPError as exc:
+            raise NWAiProviderError(f"Failed to fetch available models: {exc}") from exc
+
+        if 200 <= response.status_code < 300:
+            payload = self._safe_json(response)
+            items = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(items, list):
+                raise NWAiProviderError("Model listing payload did not include a data array.")
+            models: list[dict[str, Any]] = []
+            for entry in items:
+                normalised = self._normalise_model_entry(entry)
+                if normalised:
+                    models.append(normalised)
+            return models
+
+        message = self._build_error_message(_MODELS_COLLECTION_ENDPOINT, response)
+        raise NWAiProviderError(message)
+
+    def _request_model_metadata(
+        self,
+        client: "httpx.Client",
+        model_id: str,
+    ) -> dict[str, Any] | None:
+        if _httpx is None:
+            raise NWAiProviderError(
+                "OpenAI-compatible provider requires the optional dependency 'httpx'."
+            )
+        model = (model_id or "").strip()
+        if not model:
+            raise NWAiProviderError("Model identifier must be provided to fetch metadata.")
+
+        endpoint = _MODELS_ENDPOINT.format(model=model)
+        try:
+            response = client.get(endpoint, timeout=_DETECTION_TIMEOUT)
+        except _httpx.HTTPError as exc:
+            raise NWAiProviderError(f"Failed to fetch metadata for '{model}': {exc}") from exc
+
+        if 200 <= response.status_code < 300:
+            payload = self._safe_json(response)
+            normalised = self._normalise_model_entry(payload, fallback_id=model)
+            return normalised
+
+        message = self._build_error_message(endpoint, response)
+        raise NWAiProviderError(message)
+
+    def _store_model_cache_entry(self, metadata: dict[str, Any]) -> None:
+        model_id = metadata.get("id") if isinstance(metadata, dict) else None
+        if not isinstance(model_id, str) or not model_id:
+            return
+
+        entry = copy.deepcopy(metadata)
+        now = datetime.now(timezone.utc)
+        if self._models_cache is None:
+            self._models_cache = [entry]
+            self._models_cache_fetched_at = now
+            return
+
+        for index, existing in enumerate(self._models_cache):
+            if existing.get("id") == model_id:
+                self._models_cache[index] = entry
+                break
+        else:
+            self._models_cache.append(entry)
+
+        self._models_cache_fetched_at = now
+
+    def _get_cached_model(self, model_id: str) -> dict[str, Any] | None:
+        if self._models_cache is None or self._models_cache_fetched_at is None:
+            return None
+        if datetime.now(timezone.utc) - self._models_cache_fetched_at > _MODEL_CACHE_TTL:
+            return None
+
+        for entry in self._models_cache:
+            if entry.get("id") == model_id:
+                return copy.deepcopy(entry)
+        return None
+
+    @staticmethod
+    def _normalise_model_entry(
+        entry: Any,
+        *,
+        fallback_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(entry, dict):
+            return None
+
+        model_id = str(entry.get("id") or fallback_id or "").strip()
+        if not model_id:
+            return None
+
+        description = entry.get("description")
+        if description is not None:
+            description = str(description)
+
+        def extract_int(*keys: str) -> int | None:
+            for key in keys:
+                value = entry.get(key)
+                if isinstance(value, int):
+                    return value
+                if isinstance(value, str) and value.isdigit():
+                    return int(value)
+            return None
+
+        input_limit = extract_int(
+            "input_token_limit",
+            "max_input_tokens",
+            "context_window",
+            "context_length",
+        )
+        output_limit = extract_int(
+            "output_token_limit",
+            "max_output_tokens",
+            "max_tokens",
+        )
+
+        display_name = entry.get("display_name") or entry.get("name") or model_id
+
+        metadata = copy.deepcopy(entry)
+
+        normalised: dict[str, Any] = {
+            "id": model_id,
+            "display_name": str(display_name),
+            "description": description,
+            "owned_by": entry.get("owned_by"),
+            "input_token_limit": input_limit,
+            "output_token_limit": output_limit,
+            "capabilities": entry.get("capabilities"),
+            "metadata": metadata,
+        }
+
+        if "status" in entry:
+            normalised["status"] = entry.get("status")
+        if "type" in entry:
+            normalised["type"] = entry.get("type")
+
+        return normalised
 
     def _probe_responses_endpoint(self, client: "httpx.Client") -> _ProbeOutcome:
         if _httpx is None:
@@ -321,28 +499,15 @@ class OpenAICompatibleProvider(BaseProvider):
         )
 
     def _fetch_model_metadata(self, client: "httpx.Client") -> dict[str, Any] | None:
-        if _httpx is None:
-            raise NWAiProviderError(
-                "OpenAI-compatible provider requires the optional dependency 'httpx'."
-            )
-        endpoint = _MODELS_ENDPOINT.format(model=self.settings.model)
         try:
-            response = client.get(endpoint, timeout=_DETECTION_TIMEOUT)
-        except _httpx.HTTPError as exc:
+            metadata = self._request_model_metadata(client, self.settings.model)
+        except NWAiProviderError as exc:
             logger.debug("Model metadata fetch failed: %s", exc)
             return None
 
-        if 200 <= response.status_code < 300:
-            data = self._safe_json(response)
-            if isinstance(data, dict):
-                return data
-        else:
-            logger.debug(
-                "Model metadata probe failed (%s): %s",
-                response.status_code,
-                self._safe_json(response),
-            )
-        return None
+        if metadata is not None:
+            self._store_model_cache_entry(metadata)
+        return metadata
 
     def _build_responses_payload(
         self,

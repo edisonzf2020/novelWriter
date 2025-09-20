@@ -1,12 +1,15 @@
 """GUI tests for the AI preferences page."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from PyQt6.QtWidgets import QLabel, QDockWidget, QPushButton
 
-from novelwriter import CONFIG
+from novelwriter import CONFIG, SHARED
 from novelwriter.ai.config import AIConfig
+from novelwriter.ai.models import ModelInfo
 from novelwriter.common import NWConfigParser
 from novelwriter.dialogs.preferences import GuiPreferences
 from novelwriter.extensions.ai_copilot import AICopilotDock
@@ -81,5 +84,56 @@ def test_preferences_ai_env_override_disables_key(qtbot, monkeypatch, nwGUI) -> 
     assert dialog.aiApiKey.isEnabled() is False
     assert dialog.aiApiKey.isReadOnly() is True
     assert "OPENAI_API_KEY" in dialog.aiApiKey.placeholderText()
+
+    dialog.close()
+
+
+@pytest.mark.gui
+def test_preferences_ai_test_connection_populates_models(qtbot, monkeypatch, nwGUI) -> None:
+    """The connection test should refresh the available models list."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(CONFIG, "_ai_config", AIConfig(), raising=False)
+
+    ai_config = CONFIG.ai
+    ai_config.enabled = True
+    ai_config.model = ""
+    ai_config.api_key = "test-key"
+    ai_config.openai_base_url = "https://example.test/v1"
+
+    dummy_models = [
+        ModelInfo(
+            id="test-model",
+            display_name="Test Model",
+            description="",
+            input_token_limit=4096,
+            output_token_limit=2048,
+            owned_by="organization",
+            capabilities={},
+            metadata={},
+        )
+    ]
+
+    class DummyApi:
+        def __init__(self, project):
+            self.project = project
+
+        def listAvailableModels(self, refresh: bool = False):
+            return list(dummy_models)
+
+    monkeypatch.setattr("novelwriter.ai.NWAiApi", DummyApi, raising=False)
+    monkeypatch.setattr("novelwriter.dialogs.preferences.NWAiApi", DummyApi, raising=False)
+    monkeypatch.setattr(SHARED, "_project", SimpleNamespace(isValid=False), raising=False)
+
+    dialog = GuiPreferences(nwGUI)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(50)
+
+    dialog.aiEnabled.setChecked(True)
+    dialog._test_ai_connection()
+
+    assert dialog.aiModelSelector.count() == len(dummy_models)
+    assert dialog.aiModelSelector.currentData() == "test-model"
+    assert "Connected successfully" in dialog.aiTestStatusLabel.text()
 
     dialog.close()

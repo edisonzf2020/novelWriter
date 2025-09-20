@@ -855,6 +855,7 @@ class GuiPreferences(NDialog):
         # ==============
 
         ai_config = CONFIG.ai
+        ai_available = not hasattr(ai_config, '_reason')  # _DisabledAIConfig has _reason attribute
 
         self.sidebar.addLabel(self.tr("AI"))
 
@@ -976,7 +977,39 @@ class GuiPreferences(NDialog):
         self.aiEnvInfo.setObjectName("aiEnvInfoLabel")
         self.mainForm.addRow(None, self.aiEnvInfo)
 
-        self._update_ai_controls(self.aiEnabled.isChecked())
+        # Test connection and model selection
+        self.aiTestButton = QPushButton(self.tr("Test Connection"), self)
+        self.aiTestButton.setObjectName("aiTestButton")
+        self.aiTestButton.clicked.connect(self._test_ai_connection)
+        self.aiTestStatusLabel = NColorLabel("", self, color=SHARED.theme.helpText, wrap=True)
+        self.aiTestStatusLabel.setObjectName("aiTestStatusLabel")
+        test_layout = QHBoxLayout()
+        test_layout.setContentsMargins(0, 0, 0, 0)
+        test_layout.setSpacing(8)
+        test_layout.addWidget(self.aiTestButton)
+        test_layout.addWidget(self.aiTestStatusLabel, 1)
+        test_widget = QWidget()
+        test_widget.setLayout(test_layout)
+        self.mainForm.addRow(
+            self.tr("Connection"), test_widget,
+            self.tr("Test the API connection and refresh available models.")
+        )
+
+        # Model selection
+        self.aiModelSelector = NComboBox(self)
+        self.aiModelSelector.setObjectName("aiModelSelector")
+        self.aiModelSelector.setMinimumWidth(260)
+        self.aiModelSelector.currentTextChanged.connect(self._on_model_selection_changed)
+        current_model = getattr(ai_config, "model", "")
+        if current_model:
+            self.aiModelSelector.addItem(current_model, current_model)
+            self.aiModelSelector.setCurrentData(current_model, default="")
+        self.mainForm.addRow(
+            self.tr("Default Model"), self.aiModelSelector,
+            self.tr("Select the default model for AI operations."), stretch=(3, 2)
+        )
+
+        self._update_ai_controls(self.aiEnabled.isChecked() and ai_available)
 
         self.mainForm.finalise()
         self.sidebar.setSelected(1)
@@ -1057,8 +1090,11 @@ class GuiPreferences(NDialog):
 
     def _update_ai_controls(self, state: bool) -> None:
         """Enable or disable AI configuration inputs based on switch state."""
-
-        enabled = bool(state)
+        # Check if AI is available
+        ai_config = CONFIG.ai
+        ai_available = not hasattr(ai_config, '_reason')
+        
+        enabled = bool(state) and ai_available
         controls = [
             self.aiProvider,
             self.aiBaseUrl,
@@ -1071,7 +1107,130 @@ class GuiPreferences(NDialog):
             widget.setEnabled(enabled)
 
         self.aiApiKey.setEnabled(enabled and not self.aiApiKeyEnvOverride)
-        self.aiDisabledMessage.setVisible(not enabled)
+        
+        # Show different messages based on availability
+        if not ai_available:
+            self.aiDisabledMessage.setText(
+                self.tr("AI features are not available. Please install the AI dependencies.")
+            )
+            self.aiDisabledMessage.setVisible(True)
+            self.aiEnabled.setEnabled(False)  # Disable the switch if AI is not available
+        else:
+            self.aiDisabledMessage.setText(
+                self.tr("AI Copilot is disabled. Enable the switch above to configure providers.")
+            )
+            self.aiDisabledMessage.setVisible(not enabled)
+            self.aiEnabled.setEnabled(True)
+        
+        # Update test button and model selector
+        if hasattr(self, 'aiTestButton'):
+            self.aiTestButton.setEnabled(enabled)
+        if hasattr(self, 'aiModelSelector'):
+            self.aiModelSelector.setEnabled(enabled)
+
+    @pyqtSlot()
+    def _test_ai_connection(self) -> None:
+        """Test AI connection and refresh available models."""
+        # Check if AI is available
+        ai_config = CONFIG.ai
+        ai_available = not hasattr(ai_config, '_reason')
+        
+        if not ai_available:
+            self.aiTestStatusLabel.setText(
+                self.tr("AI features are not available. Please install the AI dependencies.")
+            )
+            if hasattr(self.aiTestStatusLabel, 'setColor'):
+                self.aiTestStatusLabel.setColor(SHARED.theme.errorText)
+            return
+            
+        if not self.aiEnabled.isChecked():
+            return
+
+        self.aiTestButton.setEnabled(False)
+        self.aiTestButton.setText(self.tr("Testing..."))
+        self.aiTestStatusLabel.setText(self.tr("Connecting..."))
+        if hasattr(self.aiTestStatusLabel, 'setColor'):
+            self.aiTestStatusLabel.setColor(SHARED.theme.helpText)
+
+        try:
+            # Create temporary config with current form values
+            try:
+                from novelwriter.ai.config import AIConfig
+                from novelwriter.ai import NWAiApi
+            except ImportError as exc:
+                raise Exception(f"AI modules not available: {exc}")
+                
+            temp_config = AIConfig()
+            temp_config.enabled = True
+            temp_config.provider = self.aiProvider.currentData() or "openai"
+            temp_config.openai_base_url = self.aiBaseUrl.text().strip()
+            temp_config.api_key = self.aiApiKey.text().strip()
+            temp_config.timeout = self.aiTimeout.value()
+
+            # Test the connection by listing models
+            if SHARED.project:
+                api = NWAiApi(SHARED.project)
+            else:
+                raise Exception("No project available for AI testing")
+            
+            # Override config temporarily
+            original_config = getattr(CONFIG, "ai", None)
+            setattr(CONFIG, '_ai_config', temp_config)
+            
+            try:
+                models = api.listAvailableModels(refresh=True)
+                self._populate_model_selector(models)
+                self.aiTestStatusLabel.setText(
+                    self.tr("Connected successfully. Found {0} model(s).").format(len(models))
+                )
+                if hasattr(self.aiTestStatusLabel, 'setColor') and hasattr(SHARED.theme, 'textGreen'):
+                    self.aiTestStatusLabel.setColor(SHARED.theme.textGreen)
+            finally:
+                # Restore original config
+                if original_config is not None:
+                    setattr(CONFIG, '_ai_config', original_config)
+
+        except Exception as exc:
+            logger.error("AI connection test failed: %s", exc)
+            self.aiTestStatusLabel.setText(
+                self.tr("Connection failed: {0}").format(str(exc))
+            )
+            if hasattr(self.aiTestStatusLabel, 'setColor'):
+                self.aiTestStatusLabel.setColor(SHARED.theme.errorText)
+        finally:
+            self.aiTestButton.setEnabled(True)
+            self.aiTestButton.setText(self.tr("Test Connection"))
+
+    def _populate_model_selector(self, models: list) -> None:
+        """Populate the model selector with available models."""
+        if not hasattr(self, 'aiModelSelector'):
+            return
+
+        current_selection = self.aiModelSelector.currentData()
+        self.aiModelSelector.clear()
+
+        if not models:
+            self.aiModelSelector.addItem(self.tr("No models available"), "")
+            return
+
+        for model in models:
+            if hasattr(model, 'display_name') and hasattr(model, 'id'):
+                display_name = model.display_name
+                model_id = model.id
+                self.aiModelSelector.addItem(display_name, model_id)
+
+        # Restore selection if possible
+        if current_selection:
+            index = self.aiModelSelector.findData(current_selection)
+            if index >= 0:
+                self.aiModelSelector.setCurrentIndex(index)
+
+    @pyqtSlot(str)
+    def _on_model_selection_changed(self, model_name: str) -> None:
+        """Handle model selection change."""
+        model_id = self.aiModelSelector.currentData()
+        if model_id:
+            logger.debug("Model selection changed to: %s (%s)", model_name, model_id)
 
     @pyqtSlot(bool)
     def _toggleAutoReplaceMain(self, state: bool) -> None:
@@ -1256,17 +1415,38 @@ class GuiPreferences(NDialog):
         CONFIG.fmtDQuoteClose = self.fmtDQuoteClose.text()
 
         # AI Configuration
-        ai_config = CONFIG.ai
-        ai_config.enabled = self.aiEnabled.isChecked()
-        ai_config.provider = self.aiProvider.currentData() or ai_config.provider
-        base_url = self.aiBaseUrl.text().strip()
-        ai_config.openai_base_url = base_url or "https://api.openai.com/v1"
-        ai_config.timeout = self.aiTimeout.value()
-        ai_config.max_tokens = self.aiMaxTokens.value()
-        ai_config.dry_run_default = self.aiDryRunDefault.isChecked()
-        ai_config.ask_before_apply = self.aiAskBeforeApply.isChecked()
-        if not self.aiApiKeyEnvOverride:
-            ai_config.api_key = self.aiApiKey.text().strip()
+        try:
+            ai_config = CONFIG.ai
+            ai_available = not hasattr(ai_config, '_reason')
+            
+            if ai_available and hasattr(self, 'aiEnabled'):
+                ai_config.enabled = self.aiEnabled.isChecked()
+                if hasattr(self, 'aiProvider'):
+                    ai_config.provider = self.aiProvider.currentData() or ai_config.provider
+                if hasattr(self, 'aiBaseUrl'):
+                    base_url = self.aiBaseUrl.text().strip()
+                    ai_config.openai_base_url = base_url or "https://api.openai.com/v1"
+                if hasattr(self, 'aiTimeout'):
+                    ai_config.timeout = self.aiTimeout.value()
+                if hasattr(self, 'aiMaxTokens'):
+                    ai_config.max_tokens = self.aiMaxTokens.value()
+                if hasattr(self, 'aiDryRunDefault'):
+                    ai_config.dry_run_default = self.aiDryRunDefault.isChecked()
+                if hasattr(self, 'aiAskBeforeApply'):
+                    ai_config.ask_before_apply = self.aiAskBeforeApply.isChecked()
+                if hasattr(self, 'aiApiKeyEnvOverride') and hasattr(self, 'aiApiKey'):
+                    if not self.aiApiKeyEnvOverride:
+                        ai_config.api_key = self.aiApiKey.text().strip()
+                
+                # Save selected model
+                if hasattr(self, 'aiModelSelector'):
+                    selected_model_id = self.aiModelSelector.currentData()
+                    if selected_model_id and isinstance(selected_model_id, str):
+                        ai_config.model = selected_model_id
+        except Exception as exc:
+            # In test environments or when AI modules are unavailable,
+            # we should not let AI configuration errors affect other settings
+            logger.debug("Failed to save AI configuration: %s", exc)
 
         # Finalise
         CONFIG.saveConfig()

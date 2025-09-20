@@ -8,7 +8,7 @@ from .errors import (
     NWAiError,
     NWAiProviderError,
 )
-from .models import BuildResult, DocumentRef, Suggestion, TextRange
+from .models import BuildResult, DocumentRef, ModelInfo, Suggestion, TextRange
 
 __all__ = [
     "NWAiApi",
@@ -20,5 +20,6 @@ __all__ = [
     "DocumentRef",
     "TextRange",
     "Suggestion",
+    "ModelInfo",
     "BuildResult",
 ]

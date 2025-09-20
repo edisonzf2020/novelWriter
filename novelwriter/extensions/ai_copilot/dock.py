@@ -169,6 +169,7 @@ class AICopilotDock(QDockWidget):
 
         self._ai_available, self._availability_reason = self._resolve_availability()
         self._updateScopeSelectorState()
+        self._updateModelStatusState()
         if self._ai_available:
             self._stack.setCurrentIndex(self._INTERACTIVE_INDEX)
             self._ensure_request_manager()
@@ -190,11 +191,17 @@ class AICopilotDock(QDockWidget):
         self._placeholderDetailLabel.setFont(theme.guiFont)
         colour = theme.helpText.name() if self._ai_available else theme.errorText.name()
         self._placeholderDetailLabel.setStyleSheet(f"color: {colour};")
-        self._messagesView.document().setDefaultFont(theme.guiFont)
+        if self._messagesView.document():
+            self._messagesView.document().setDefaultFont(theme.guiFont)
         self._inputEdit.setFont(theme.guiFont)
         self._runStatusLabel.setFont(theme.guiFontSmall)
         self._previewTitleLabel.setFont(theme.guiFontB)
-        self._previewBrowser.document().setDefaultFont(theme.guiFontFixed)
+        if self._previewBrowser.document():
+            self._previewBrowser.document().setDefaultFont(theme.guiFontFixed)
+        if hasattr(self, "_modelLabel"):
+            self._modelLabel.setFont(theme.guiFont)
+        if hasattr(self, "_currentModelButton"):
+            self._currentModelButton.setFont(theme.guiFont)
         self._applyTranslations()
 
     ##
@@ -335,6 +342,10 @@ class AICopilotDock(QDockWidget):
         self._previewFrame.setLayout(preview_layout)
         layout.addWidget(self._previewFrame)
 
+        # Model status bar at the bottom
+        self._modelStatusFrame = self._buildModelStatusRow()
+        layout.addWidget(self._modelStatusFrame)
+
         container.setLayout(layout)
         return container
 
@@ -380,6 +391,40 @@ class AICopilotDock(QDockWidget):
         self._populateScopeSelector()
         return frame
 
+    def _buildModelStatusRow(self) -> QFrame:
+        frame = QFrame(self)
+        frame.setObjectName("aiModelStatusRow")
+        frame.setFrameShape(QFrame.Shape.StyledPanel)
+        frame.setFrameShadow(QFrame.Shadow.Plain)
+
+        row_layout = QHBoxLayout()
+        row_layout.setContentsMargins(8, 6, 8, 6)
+        row_layout.setSpacing(8)
+
+        self._modelLabel = QLabel(self.tr("Model:"), frame)
+        self._modelLabel.setObjectName("aiModelLabel")
+        self._modelLabel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        self._modelSettingsButton = QPushButton(frame)
+        self._modelSettingsButton.setObjectName("aiModelSettingsButton")
+        self._modelSettingsButton.setText("⚙")
+        self._modelSettingsButton.setToolTip(self.tr("Model Settings"))
+        self._modelSettingsButton.setFixedSize(24, 24)
+        self._modelSettingsButton.clicked.connect(self._handleModelSettingsClicked)
+
+        self._currentModelButton = QPushButton(frame)
+        self._currentModelButton.setObjectName("aiCurrentModelButton")
+        self._currentModelButton.setText(self.tr("Loading..."))
+        self._currentModelButton.setToolTip(self.tr("Click to change model"))
+        self._currentModelButton.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._currentModelButton.clicked.connect(self._handleModelSelectionClicked)
+
+        row_layout.addWidget(self._modelLabel)
+        row_layout.addWidget(self._modelSettingsButton)
+        row_layout.addWidget(self._currentModelButton, stretch=1)
+        frame.setLayout(row_layout)
+        return frame
+
     def _scopeOptions(self) -> list[Tuple[str, str]]:
         return [
             ("selection", self.tr("Selection")),
@@ -419,6 +464,82 @@ class AICopilotDock(QDockWidget):
         self.contextScopeChanged.emit(scope_key)
         logger.debug("Context scope changed to: %s", scope_key)
 
+    def _handleModelSelectionClicked(self) -> None:
+        """Handle model selection button click."""
+        from .model_selector import ModelSelectorDialog
+        
+        dialog = ModelSelectorDialog(self)
+        dialog.modelSelected.connect(self._onModelSelected)
+        dialog.exec()
+
+    def _handleModelSettingsClicked(self) -> None:
+        """Handle model settings button click."""
+        from .model_selector import ModelParametersDialog
+        
+        dialog = ModelParametersDialog(self)
+        dialog.parametersChanged.connect(self._onParametersChanged)
+        dialog.exec()
+
+    def _onModelSelected(self, model_id: str, model_data: dict) -> None:
+        """Handle model selection from dialog."""
+        ai_config = getattr(CONFIG, "ai", None)
+        if ai_config is None:
+            logger.warning("AI config not available for model selection")
+            return
+
+        try:
+            # Update configuration
+            ai_config.model = model_id
+            
+            # Update model metadata if provided
+            model_metadata = model_data.get("model_metadata")
+            if isinstance(model_metadata, dict):
+                ai_config.default_model_metadata = model_metadata
+            
+            # Update parameters if provided
+            parameters = model_data.get("parameters", {})
+            if "temperature" in parameters:
+                ai_config.temperature = float(parameters["temperature"])
+            if "max_tokens" in parameters:
+                ai_config.max_tokens = int(parameters["max_tokens"])
+            
+            # Save configuration
+            CONFIG.saveConfig()
+            
+            # Reset provider to use new model
+            if self._request_manager and hasattr(self._request_manager, "api"):
+                self._request_manager.api.resetProvider()
+            
+            # Update UI
+            self._updateModelStatusState()
+            logger.info("Selected model '%s'", model_id)
+            
+        except Exception as exc:
+            logger.error("Failed to update model configuration: %s", exc)
+            self._display_error(self.tr("Failed to update model: {0}").format(str(exc)))
+
+    def _onParametersChanged(self, parameters: dict) -> None:
+        """Handle parameter changes from dialog."""
+        ai_config = getattr(CONFIG, "ai", None)
+        if ai_config is None:
+            logger.warning("AI config not available for parameter update")
+            return
+
+        try:
+            # Update parameters
+            if "temperature" in parameters:
+                ai_config.temperature = float(parameters["temperature"])
+            if "max_tokens" in parameters:
+                ai_config.max_tokens = int(parameters["max_tokens"])
+            
+            # Save configuration
+            CONFIG.saveConfig()
+            logger.info("Updated model parameters: %s", parameters)
+            
+        except Exception as exc:
+            logger.error("Failed to update model parameters: %s", exc)
+            self._display_error(self.tr("Failed to update parameters: {0}").format(str(exc)))
+
     def _updateScopeSelectorState(self) -> None:
         enabled = self._ai_available and not self._request_in_progress
         if hasattr(self, "_contextScopeSelector") and self._contextScopeSelector is not None:
@@ -427,6 +548,42 @@ class AICopilotDock(QDockWidget):
             self._scopeLabel.setEnabled(enabled)
         if hasattr(self, "_scopeFrame") and self._scopeFrame is not None:
             self._scopeFrame.setEnabled(enabled)
+
+    def _updateModelStatusState(self) -> None:
+        """Update model status bar enabled state and current model display."""
+        enabled = self._ai_available and not self._request_in_progress
+        if hasattr(self, "_currentModelButton") and self._currentModelButton is not None:
+            self._currentModelButton.setEnabled(enabled)
+        if hasattr(self, "_modelSettingsButton") and self._modelSettingsButton is not None:
+            self._modelSettingsButton.setEnabled(enabled)
+        if hasattr(self, "_modelLabel") and self._modelLabel is not None:
+            self._modelLabel.setEnabled(enabled)
+        if hasattr(self, "_modelStatusFrame") and self._modelStatusFrame is not None:
+            self._modelStatusFrame.setEnabled(enabled)
+
+        # Update current model display
+        if hasattr(self, "_currentModelButton") and self._currentModelButton is not None:
+            current_model = self._getCurrentModelName()
+            self._currentModelButton.setText(current_model)
+
+    def _getCurrentModelName(self) -> str:
+        """Get the current model name from configuration."""
+        ai_config = getattr(CONFIG, "ai", None)
+        if ai_config is None:
+            return self.tr("No model")
+        
+        model = getattr(ai_config, "model", "")
+        if not model:
+            return self.tr("No model")
+        
+        # Try to get display name from metadata if available
+        metadata = getattr(ai_config, "default_model_metadata", None)
+        if isinstance(metadata, dict):
+            display_name = metadata.get("display_name")
+            if display_name and isinstance(display_name, str):
+                return display_name
+        
+        return model
 
     def _resolve_availability(self) -> Tuple[bool, Optional[str]]:
         ai_config = getattr(CONFIG, "ai", None)
@@ -469,6 +626,7 @@ class AICopilotDock(QDockWidget):
         if hasattr(self, "_inputEdit"):
             self._inputEdit.setEnabled(enabled)
         self._updateScopeSelectorState()
+        self._updateModelStatusState()
 
     def _handleSendClicked(self) -> None:
         text = self._inputEdit.toPlainText().strip()
@@ -511,12 +669,13 @@ class AICopilotDock(QDockWidget):
         self._cancelButton.setVisible(True)
         self._inputEdit.clear()
 
-        self._append_message("user", prompt if action_key is None else user_text or action.label)
+        label_text = getattr(action, 'label', '') if action else ''
+        self._append_message("user", prompt if action_key is None else user_text or label_text)
         self._append_message("assistant", "")
         self._streaming_index = len(self._messages) - 1
         self._render_messages()
 
-        context_budget = action.context_budget if action else None
+        context_budget = getattr(action, 'context_budget', None) if action else None
         request = self._request_manager.build_request(
             scope=self._currentScope,
             user_prompt=prompt,
@@ -668,6 +827,7 @@ class AICopilotDock(QDockWidget):
             return
         api = self._request_manager.api
         self._clear_pending_suggestion(rollback=True)
+        transaction_id = None
         try:
             transaction_id = api.begin_transaction()
             text_range = TextRange(start=int(selection_range[0]), end=int(selection_range[1]))
@@ -676,7 +836,8 @@ class AICopilotDock(QDockWidget):
             logger.error("Failed to build suggestion preview: %s", exc)
             self._display_error(str(exc))
             try:
-                api.rollback_transaction(transaction_id)
+                if transaction_id:
+                    api.rollback_transaction(transaction_id)
             except Exception:  # noqa: BLE001 - defensive cleanup
                 logger.debug("Rollback failed after preview error")
             return
@@ -724,7 +885,8 @@ class AICopilotDock(QDockWidget):
         self._render_messages()
         self._previewFrame.setVisible(False)
         self._pending_suggestion = None
-        self._refresh_editor_after_apply(handle, selection_range, new_text)
+        if isinstance(selection_range, (tuple, list)) and len(selection_range) == 2:
+            self._refresh_editor_after_apply(handle, (int(selection_range[0]), int(selection_range[1])), new_text)
 
     def _dismiss_suggestion(self) -> None:
         self._clear_pending_suggestion(rollback=True)
@@ -791,4 +953,10 @@ class AICopilotDock(QDockWidget):
             )
         for action_key, button in getattr(self, "_quickActionButtons", {}).items():
             button.setText(self._quick_actions[action_key].label)
+        if hasattr(self, "_modelLabel"):
+            self._modelLabel.setText(self.tr("Model:"))
+        if hasattr(self, "_modelSettingsButton"):
+            self._modelSettingsButton.setToolTip(self.tr("Model Settings"))
+        if hasattr(self, "_currentModelButton"):
+            self._currentModelButton.setToolTip(self.tr("Click to change model"))
 
