@@ -78,7 +78,9 @@ class _DisabledAIConfig:
         "max_tokens",
         "dry_run_default",
         "ask_before_apply",
+        "proofreading_enabled",
         "api_key_from_env",
+        "_api_key_from_env",
         "_reason",
     )
 
@@ -92,7 +94,9 @@ class _DisabledAIConfig:
         self.max_tokens = 0
         self.dry_run_default = True
         self.ask_before_apply = True
+        self.proofreading_enabled = False
         self.api_key_from_env = False
+        self._api_key_from_env = False
         self._reason = reason
 
     def load_from_main_config(self, *_: object, **__: object) -> None:

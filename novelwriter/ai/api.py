@@ -5,12 +5,13 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from threading import Lock, RLock
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Iterator, Mapping, Optional
 from types import MappingProxyType
 from uuid import uuid4
 
@@ -20,11 +21,12 @@ logger = logging.getLogger(__name__)
 from novelwriter.enum import nwItemClass, nwItemLayout
 
 from .errors import NWAiApiError, NWAiConfigError, NWAiProviderError
+from .history import HistoryManager, HistoryOperation
 from .memory import ConversationMemory, ConversationTurn
-from .models import BuildResult, DocumentRef, ModelInfo, Suggestion, TextRange
+from .models import BuildResult, DocumentRef, ModelInfo, ProofreadResult, Suggestion, TextRange
 from .providers import ProviderCapabilities
 from .cache import ProviderQueryCache, build_cache_key, config_from_ai
-from .performance import get_tracker
+from .performance import get_tracker, log_metric_event
 
 __all__ = ["NWAiApi"]
 
@@ -52,17 +54,20 @@ class _TransactionContext:
 class _AuditRecord:
     """Immutable audit trail entry for AI-triggered activity."""
 
+    event_id: str
     timestamp: datetime
     transaction_id: Optional[str]
     operation: str
     target: Optional[str]
     summary: Optional[str]
     level: str = "info"
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         """Serialise the audit entry into a JSON-friendly mapping."""
 
-        return {
+        payload: dict[str, Any] = {
+            "event_id": self.event_id,
             "timestamp": self.timestamp.isoformat(),
             "transaction_id": self.transaction_id,
             "operation": self.operation,
@@ -70,6 +75,9 @@ class _AuditRecord:
             "summary": self.summary,
             "level": self.level,
         }
+        if self.metadata:
+            payload["metadata"] = dict(self.metadata)
+        return payload
 
 
 class _StreamingResult(Iterator[str]):
@@ -134,7 +142,62 @@ class _StreamingResult(Iterator[str]):
                 logger.debug("Closing streaming iterator failed", exc_info=True)
 
 
+_DIFF_METADATA_LIMIT = 4000
+
+
+def _compute_diff_payload(
+    original_text: str,
+    new_text: str,
+    *,
+    from_label: str,
+    to_label: str,
+    include_text: bool = False,
+) -> tuple[Optional[str], dict[str, int]]:
+    """Return unified diff text (optional) and change statistics."""
+
+    old_lines = original_text.splitlines(keepends=True)
+    new_lines = new_text.splitlines(keepends=True)
+    diff_iter = difflib.unified_diff(
+        old_lines,
+        new_lines,
+        fromfile=from_label,
+        tofile=to_label,
+        lineterm="",
+    )
+
+    additions = 0
+    deletions = 0
+    total = 0
+    lines: Optional[list[str]] = [] if include_text else None
+    for line in diff_iter:
+        total += 1
+        if line.startswith("+") and not line.startswith("+++ "):
+            additions += 1
+        elif line.startswith("-") and not line.startswith("--- "):
+            deletions += 1
+        if lines is not None:
+            lines.append(line)
+
+    stats = {
+        "lines": total,
+        "additions": additions,
+        "deletions": deletions,
+    }
+    diff_text = "\n".join(lines) if lines is not None else None
+    return diff_text, stats
+
+
 _AUDIT_LOG_LIMIT = 1000
+
+_PROOFREAD_SYSTEM_PROMPT = (
+    "You are a meticulous editor for the novelWriter application. Improve grammar, spelling, "
+    "and clarity while preserving British English spelling and the author's tone. Respond with "
+    "the revised document text only without additional commentary."
+)
+
+_PROOFREAD_USER_TEMPLATE = (
+    "Proofread the following document content and return the improved text.\n\n{0}"
+)
 
 _CONTEXT_SCOPES: tuple[str, ...] = (
     "selection",
@@ -187,6 +250,7 @@ class NWAiApi:
         self._provider_lock = RLock()
         self._query_cache = ProviderQueryCache()
         self._provider: "BaseProvider" | None = None
+        self._history = HistoryManager()
 
     # ------------------------------------------------------------------
     # Provider management
@@ -408,6 +472,13 @@ class NWAiApi:
             None,
             "provider.request.dispatched",
             summary=f"{len(messages)} message(s) sent",
+            metadata={
+                "provider": provider_id,
+                "model": model_name,
+                "stream": bool(stream),
+                "base_url": base_url or None,
+                "cache_candidate": bool(cache_key),
+            },
         )
 
         capabilities = None
@@ -441,6 +512,11 @@ class NWAiApi:
                     None,
                     "provider.request.cached",
                     summary=f"{len(messages)} message(s) served from cache",
+                    metadata={
+                        "provider": provider_id,
+                        "model": model_name,
+                        "cache_key": cache_key,
+                    },
                 )
 
                 def _cached_iter() -> Iterator[str]:
@@ -600,7 +676,18 @@ class NWAiApi:
                             yield from consume(response)
                     except Exception as exc:  # noqa: BLE001 - propagate as API error
                         message = str(exc) or exc.__class__.__name__
-                        self._record_audit(None, "provider.request.failed", summary=message, level="error")
+                        self._record_audit(
+                            None,
+                            "provider.request.failed",
+                            summary=message,
+                            level="error",
+                            metadata={
+                                "provider": provider_id,
+                                "model": model_name,
+                                "stream": bool(stream),
+                                "cache_candidate": bool(cache_key),
+                            },
+                        )
                         span.fail(message)
                         raise NWAiApiError(message) from exc
                     else:
@@ -608,6 +695,15 @@ class NWAiApi:
                             None,
                             "provider.request.succeeded",
                             summary=f"{total_chars} characters received",
+                            metadata={
+                                "provider": provider_id,
+                                "model": model_name,
+                                "duration_ms": round(span.elapsed_ms(), 3),
+                                "cache": span.cache_status,
+                                "endpoint": span.endpoint,
+                                "degraded_from": span.degraded_from,
+                                "stream": bool(stream),
+                            },
                         )
                     finally:
                         cancel_callbacks.clear()
@@ -658,8 +754,10 @@ class NWAiApi:
     def rollback_transaction(self, transaction_id: str) -> bool:
         """Rollback the given transaction and discard pending changes."""
 
+        start = time.perf_counter()
         context = self._pop_transaction_frame(transaction_id, action="rollback")
         self._rollback_pending_operations(transaction_id, context.pending_operations)
+        duration_ms = (time.perf_counter() - start) * 1000.0
         if self._transaction_stack:
             depth = len(self._transaction_stack) + 1
             self._record_audit(
@@ -667,6 +765,14 @@ class NWAiApi:
                 "transaction.rollback.nested",
                 summary=f"depth={depth}",
                 level="warning",
+            )
+            log_metric_event(
+                "transaction.rollback.nested",
+                {
+                    "transaction_id": transaction_id,
+                    "duration_ms": round(duration_ms, 3),
+                    "depth": depth,
+                },
             )
             return True
 
@@ -676,6 +782,63 @@ class NWAiApi:
             summary="Transaction rolled back.",
             level="warning",
         )
+        log_metric_event(
+            "transaction.rollback",
+            {
+                "transaction_id": transaction_id,
+                "duration_ms": round(duration_ms, 3),
+                "operation_count": len(context.pending_operations),
+            },
+        )
+        return True
+
+    def rollbackHistoryTransaction(self, transaction_id: str) -> bool:
+        """Rollback a previously committed transaction using stored metadata."""
+
+        if not isinstance(transaction_id, str) or not transaction_id.strip():
+            raise NWAiApiError("Transaction id must be a non-empty string.")
+
+        normalised = transaction_id.strip()
+        operations = self._history.get_operations_for_rollback(normalised)
+        if not operations:
+            raise NWAiApiError(
+                f"No rollback data available for transaction '{normalised}'."
+            )
+
+        missing = [op.operation for op in operations if op.undo is None]
+        if missing:
+            raise NWAiApiError(
+                "Rollback metadata is incomplete for transaction operations."
+            )
+
+        for operation in reversed(operations):
+            if operation.undo is None:
+                continue
+            try:
+                operation.undo()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                self._record_audit(
+                    normalised,
+                    "history.rollback.error",
+                    target=operation.target,
+                    summary=f"Undo failed for {operation.operation}: {exc}",
+                    level="error",
+                    metadata=operation.metadata,
+                )
+                raise NWAiApiError(f"Rollback failed: {exc}") from exc
+
+        self._history.clear_operations(normalised)
+        self._project.updateCounts()
+        rollback_metadata = {
+            "operations": [op.to_summary() for op in operations],
+        }
+        self._record_audit(
+            normalised,
+            "transaction.rollback.manual",
+            summary="Transaction rolled back via history.",
+            level="warning",
+            metadata=rollback_metadata,
+        )
         return True
 
     def get_audit_log(self) -> list[dict[str, Any]]:
@@ -684,6 +847,20 @@ class NWAiApi:
         entries = list(self._audit_log)
         entries.sort(key=lambda item: item.timestamp)
         return [entry.as_dict() for entry in entries]
+
+    def getHistorySnapshot(
+        self,
+        *,
+        transaction_limit: Optional[int] = None,
+        event_limit: int = 200,
+    ) -> dict[str, Any]:
+        """Return an aggregated history snapshot for UI consumption."""
+
+        snapshot = self._history.snapshot(
+            transaction_limit=transaction_limit,
+            event_limit=event_limit,
+        )
+        return snapshot.to_dict()
 
     def _pop_transaction_frame(self, transaction_id: str, *, action: str) -> _TransactionContext:
         """Validate ``transaction_id`` and pop the current stack frame."""
@@ -741,7 +918,9 @@ class NWAiApi:
 
         status = "committed" if success else "rolled_back"
         level = "info" if success else "warning"
-        for operation in operations:
+        operation_list = list(operations)
+        saved_operations: list[HistoryOperation] = []
+        for operation in operation_list:
             summary = operation.summary or f"{operation.operation} {status}"
             self._record_audit(
                 transaction_id,
@@ -749,7 +928,20 @@ class NWAiApi:
                 target=operation.target,
                 summary=summary,
                 level=level,
+                metadata=operation.metadata,
             )
+            if success:
+                saved_operations.append(
+                    HistoryOperation(
+                        operation=operation.operation,
+                        target=operation.target,
+                        summary=summary,
+                        metadata=dict(operation.metadata) if operation.metadata else {},
+                        undo=operation.undo,
+                    )
+                )
+        if success and saved_operations:
+            self._history.register_operations(transaction_id, saved_operations)
 
     def _rollback_pending_operations(
         self,
@@ -769,6 +961,7 @@ class NWAiApi:
                         target=operation.target,
                         summary=f"Undo failed for {operation.operation}: {exc}",
                         level="error",
+                        metadata=operation.metadata,
                     )
             self._record_audit(
                 transaction_id,
@@ -776,6 +969,7 @@ class NWAiApi:
                 target=operation.target,
                 summary=operation.summary or f"{operation.operation} rolled back",
                 level="warning",
+                metadata=operation.metadata,
             )
 
     def _record_audit(
@@ -786,18 +980,33 @@ class NWAiApi:
         target: Optional[str] = None,
         summary: Optional[str] = None,
         level: str = "info",
+        metadata: Mapping[str, Any] | None = None,
     ) -> None:
         """Store an audit entry with the given metadata."""
 
+        payload = dict(metadata) if metadata else {}
+        event_id = uuid4().hex
         entry = _AuditRecord(
+            event_id=event_id,
             timestamp=datetime.now(timezone.utc),
             transaction_id=transaction_id,
             operation=operation,
             target=target,
             summary=summary,
             level=level,
+            metadata=MappingProxyType(payload),
         )
         self._audit_log.append(entry)
+        self._history.add_event(
+            event_id=event_id,
+            timestamp=entry.timestamp,
+            transaction_id=transaction_id,
+            operation=operation,
+            target=target,
+            summary=summary,
+            level=level,
+            metadata=payload,
+        )
 
     def _assert_transaction_active(self) -> _TransactionContext:
         """Ensure a transaction is active before performing write operations."""
@@ -984,30 +1193,37 @@ class NWAiApi:
         
         # Check apply parameter with CONFIG.ai.dry_run_default if apply is False
         should_apply = apply or not getattr(CONFIG.ai, "dry_run_default", True)
-        
+
+        diff_text, diff_stats = _compute_diff_payload(
+            original_text,
+            text,
+            from_label=f"original/{handle}",
+            to_label=f"modified/{handle}",
+            include_text=not should_apply,
+        )
+        truncated_preview: Optional[str] = None
+        if diff_text is not None:
+            truncated_preview = diff_text if len(diff_text) <= _DIFF_METADATA_LIMIT else diff_text[:_DIFF_METADATA_LIMIT]
+        diff_metadata = {
+            "original_length": len(original_text),
+            "new_length": len(text),
+            "diff_size": abs(len(text) - len(original_text)),
+            "diff_stats": diff_stats,
+        }
+        if truncated_preview:
+            diff_metadata["diff_preview"] = truncated_preview
+
         if not should_apply:
-            # Generate diff preview
-            old_lines = original_text.splitlines(keepends=True)
-            new_lines = text.splitlines(keepends=True)
-            diff_lines = list(difflib.unified_diff(
-                old_lines, 
-                new_lines, 
-                fromfile=f"original/{handle}", 
-                tofile=f"modified/{handle}",
-                lineterm=""
-            ))
-            
-            # Record audit entry for preview
             self._record_audit(
                 self._transaction_stack[-1].transaction_id,
                 "document.preview",
                 target=handle,
                 summary=f"Generated diff preview for document '{handle}'",
-                level="info"
+                level="info",
+                metadata=diff_metadata,
             )
-            
-            return False  # Preview mode, no actual write
-        
+            return False
+
         # Apply the changes
         success = self._write_document(handle, text)
         
@@ -1018,11 +1234,7 @@ class NWAiApi:
                 target=handle,
                 summary=f"Updated document '{handle}' content",
                 undo=undo_callback,
-                metadata={
-                    "original_length": len(original_text),
-                    "new_length": len(text),
-                    "diff_size": abs(len(text) - len(original_text))
-                }
+                metadata=dict(diff_metadata),
             )
         
         return success
@@ -1045,39 +1257,46 @@ class NWAiApi:
         # Apply the replacement to generate preview
         new_full_text = original_text[:rng.start] + newText + original_text[rng.end:]
         
-        # Generate diff
-        old_lines = original_text.splitlines(keepends=True)
-        new_lines = new_full_text.splitlines(keepends=True)
-        diff_lines = list(difflib.unified_diff(
-            old_lines,
-            new_lines,
-            fromfile=f"original/{handle}",
-            tofile=f"suggested/{handle}",
-            lineterm=""
-        ))
-        diff_text = "\n".join(diff_lines) if diff_lines else "No changes"
+        diff_text, diff_stats = _compute_diff_payload(
+            original_text,
+            new_full_text,
+            from_label=f"original/{handle}",
+            to_label=f"suggested/{handle}",
+            include_text=True,
+        )
+        if not diff_text:
+            diff_text = "No changes"
         
         # Generate unique suggestion ID
         suggestion_id = str(uuid4())
-        
-        # Store suggestion in cache
-        self._pending_suggestions[suggestion_id] = {
+
+        suggestion_metadata = {
             "handle": handle,
-            "range": rng,
+            "range": (rng.start, rng.end),
             "new_text": newText,
             "original_text": original_text,
             "preview_text": new_full_text,
             "diff": diff_text,
-            "transaction_id": self._transaction_stack[-1].transaction_id
+            "diff_stats": diff_stats,
+            "transaction_id": self._transaction_stack[-1].transaction_id,
         }
-        
+
+        # Store suggestion in cache
+        self._pending_suggestions[suggestion_id] = suggestion_metadata
+
         # Record audit entry
         self._record_audit(
             self._transaction_stack[-1].transaction_id,
             "suggestion.preview",
             target=handle,
             summary=f"Generated suggestion {suggestion_id} for range [{rng.start}:{rng.end}]",
-            level="info"
+            level="info",
+            metadata={
+                "suggestion_id": suggestion_id,
+                "range": {"start": rng.start, "end": rng.end},
+                "diff": diff_stats,
+                "preview_length": len(new_full_text),
+            },
         )
         
         # Create and return suggestion object
@@ -1104,6 +1323,35 @@ class NWAiApi:
         if suggestion_data["transaction_id"] != current_transaction_id:
             raise NWAiApiError(f"Suggestion {suggestionId} belongs to a different transaction")
         
+        # Build metadata for audit records
+        diff_stats = suggestion_data.get("diff_stats") or {}
+        diff_preview = suggestion_data.get("diff")
+        if isinstance(diff_preview, str) and len(diff_preview) > _DIFF_METADATA_LIMIT:
+            diff_preview_meta = diff_preview[:_DIFF_METADATA_LIMIT]
+        else:
+            diff_preview_meta = diff_preview if isinstance(diff_preview, str) else None
+        range_tuple = suggestion_data.get("range")
+        range_metadata: Optional[Dict[str, int]] = None
+        if isinstance(range_tuple, (tuple, list)) and len(range_tuple) == 2:
+            range_metadata = {
+                "start": int(range_tuple[0]),
+                "end": int(range_tuple[1]),
+            }
+        preview_length = len(suggestion_data.get("preview_text", ""))
+        base_metadata: dict[str, Any] = {
+            "suggestion_id": suggestionId,
+            "preview_length": preview_length,
+        }
+        provider_id = getattr(CONFIG.ai, "provider", None)
+        if provider_id:
+            base_metadata["provider"] = provider_id
+        if diff_stats:
+            base_metadata["diff"] = diff_stats
+        if range_metadata is not None:
+            base_metadata["range"] = range_metadata
+        if diff_preview_meta:
+            base_metadata["diff_preview"] = diff_preview_meta
+        
         # Check CONFIG.ai.ask_before_apply setting
         if getattr(CONFIG.ai, "ask_before_apply", True):
             # In a real implementation, this would trigger UI confirmation
@@ -1113,7 +1361,8 @@ class NWAiApi:
                 "suggestion.confirmation_required",
                 target=suggestion_data["handle"],
                 summary=f"Suggestion {suggestionId} requires manual confirmation",
-                level="warning"
+                level="warning",
+                metadata=base_metadata,
             )
         
         # Apply the suggestion using setDocText with apply=True
@@ -1126,14 +1375,15 @@ class NWAiApi:
         if success:
             # Clean up the suggestion from cache after successful application
             del self._pending_suggestions[suggestionId]
-            
+
             # Record successful application
             self._record_audit(
                 current_transaction_id,
                 "suggestion.applied",
                 target=suggestion_data["handle"],
                 summary=f"Successfully applied suggestion {suggestionId}",
-                level="info"
+                level="info",
+                metadata=base_metadata,
             )
         else:
             # Record failed application
@@ -1142,10 +1392,103 @@ class NWAiApi:
                 "suggestion.apply_failed",
                 target=suggestion_data["handle"],
                 summary=f"Failed to apply suggestion {suggestionId}",
-                level="error"
+                level="error",
+                metadata=base_metadata,
             )
         
         return success
+
+    def proofreadDocument(
+        self,
+        handle: str,
+        *,
+        temperature: Optional[float] = None,
+        max_output_tokens: Optional[int] = None,
+    ) -> ProofreadResult:
+        """Generate a proofreading suggestion for the entire document."""
+
+        ai_config = getattr(CONFIG, "ai", None)
+        if ai_config is None or not getattr(ai_config, "enabled", False):
+            raise NWAiApiError("AI features are disabled.")
+
+        original_text = self.getDocText(handle)
+        if not original_text:
+            raise NWAiApiError("Document is empty and cannot be proofread.")
+
+        self._record_audit(
+            None,
+            "proofread.requested",
+            target=handle,
+            summary="Proofreading requested.",
+            metadata={"length": len(original_text)},
+        )
+
+        messages: list[Mapping[str, Any]] = [
+            {"role": "system", "content": _PROOFREAD_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": _PROOFREAD_USER_TEMPLATE.format(original_text),
+            },
+        ]
+
+        extra: dict[str, Any] = {}
+        if max_output_tokens is not None:
+            extra["max_output_tokens"] = max_output_tokens
+        elif getattr(ai_config, "max_tokens", None):
+            extra["max_output_tokens"] = int(ai_config.max_tokens)
+        if temperature is not None:
+            extra["temperature"] = temperature
+        elif getattr(ai_config, "temperature", None) is not None:
+            extra["temperature"] = float(ai_config.temperature)
+
+        iterator = self.streamChatCompletion(messages, stream=False, extra=extra)
+        revised_parts: list[str] = []
+        try:
+            for chunk in iterator:
+                if chunk:
+                    revised_parts.append(chunk)
+        finally:
+            closer = getattr(iterator, "close", None)
+            if callable(closer):
+                with suppress(Exception):
+                    closer()
+
+        revised_text = "".join(revised_parts).strip()
+        if not revised_text:
+            raise NWAiApiError("Proofreading response was empty.")
+
+        transaction_id: Optional[str] = None
+        try:
+            transaction_id = self.begin_transaction()
+            full_range = TextRange(start=0, end=len(original_text))
+            suggestion = self.previewSuggestion(handle, full_range, revised_text)
+        except Exception as exc:
+            if transaction_id:
+                with suppress(Exception):
+                    self.rollback_transaction(transaction_id)
+            raise
+
+        suggestion_meta = self._pending_suggestions.get(suggestion.id, {})
+        diff_stats = suggestion_meta.get("diff_stats", {})
+        preview_length = len(suggestion.preview)
+        self._record_audit(
+            transaction_id,
+            "proofread.completed",
+            target=handle,
+            summary=f"Proofreading ready for suggestion {suggestion.id}",
+            metadata={
+                "suggestion_id": suggestion.id,
+                "diff": diff_stats,
+                "preview_length": preview_length,
+            },
+        )
+
+        return ProofreadResult(
+            transaction_id=transaction_id or "",
+            suggestion=suggestion,
+            original_text=original_text,
+            diff_stats=diff_stats,
+        )
 
     # ------------------------------------------------------------------
     # Context and conversation utilities

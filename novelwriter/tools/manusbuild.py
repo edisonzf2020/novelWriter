@@ -26,21 +26,22 @@ from __future__ import annotations
 import logging
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional
 
-from PyQt6.QtCore import QTimer, pyqtSlot
+from PyQt6.QtCore import QTimer, Qt, pyqtSlot
 from PyQt6.QtWidgets import (
-    QAbstractButton, QAbstractItemView, QDialogButtonBox, QFileDialog,
+    QAbstractButton, QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFileDialog,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QSplitter, QVBoxLayout, QWidget
+    QMessageBox, QPushButton, QSplitter, QVBoxLayout, QWidget
 )
 
-from novelwriter import SHARED
+from novelwriter import CONFIG, SHARED
 from novelwriter.common import makeFileNameSafe, openExternalPath
 from novelwriter.constants import nwLabels
 from novelwriter.core.docbuild import NWBuildDocument
 from novelwriter.core.item import NWItem
 from novelwriter.enum import nwBuildFmt
+from novelwriter.extensions.ai_copilot.proofreader import AICopilotProofreadDialog
 from novelwriter.extensions.modified import NDialog, NIconToolButton
 from novelwriter.extensions.progressbars import NProgressSimple
 from novelwriter.types import QtAlignCenter, QtDialogClose, QtRoleAction, QtRoleReject, QtUserRole
@@ -214,6 +215,41 @@ class GuiManuscriptBuild(NDialog):
             pOptions.getInt("GuiManuscriptBuild", "sumWidth", 360),
         ])
 
+        # Setup Proofreading UI first (before adding to main layout)
+        self._proofread_available, self._proofread_reason = self._resolve_proofread_availability()
+
+        self.cbProofread = QCheckBox(self.tr("Run AI proofreading before export"), self)
+        ai_config = getattr(CONFIG, "ai", None)
+        preferred_default = False
+        if ai_config is not None:
+            preferred_default = bool(getattr(ai_config, "proofreading_enabled", False))
+        self.cbProofread.setChecked(self._proofread_available and preferred_default)
+        self.cbProofread.stateChanged.connect(self._handle_proofread_toggle)
+
+        self.btnProofread = QPushButton(self.tr("Review Proofreading"), self)
+        self.btnProofread.clicked.connect(self._handle_launch_proofread)
+
+        self.proofreadBox = QHBoxLayout()
+        self.proofreadBox.setContentsMargins(0, 0, 0, 0)
+        self.proofreadBox.setSpacing(8)
+        self.proofreadBox.addWidget(self.cbProofread)
+        self.proofreadBox.addWidget(self.btnProofread)
+        self.proofreadBox.addStretch(1)
+
+        if not self._proofread_available:
+            reason = self._proofread_reason or self.tr("AI proofreading is not available.")
+            self.cbProofread.setChecked(False)
+            self.cbProofread.setEnabled(False)
+            self.cbProofread.setToolTip(reason)
+            self.btnProofread.setEnabled(False)
+            self.btnProofread.setToolTip(reason)
+        else:
+            self.cbProofread.setToolTip("")
+            self.btnProofread.setToolTip("")
+
+        self._proofread_completed: bool = not self.cbProofread.isChecked()
+
+        # Main Layout Setup
         self.outerBox = QVBoxLayout()
         self.outerBox.addWidget(self.lblMain, 0, QtAlignCenter)
         self.outerBox.addSpacing(16)
@@ -222,6 +258,8 @@ class GuiManuscriptBuild(NDialog):
         self.outerBox.addWidget(self.buildProgress, 0)
         self.outerBox.addSpacing(4)
         self.outerBox.addLayout(self.buildBox, 0)
+        self.outerBox.addSpacing(12)
+        self.outerBox.addLayout(self.proofreadBox, 0)
         self.outerBox.addSpacing(16)
         self.outerBox.addWidget(self.buttonBox, 0)
         self.outerBox.setSpacing(0)
@@ -240,7 +278,7 @@ class GuiManuscriptBuild(NDialog):
         self.btnReset.clicked.connect(self._doResetBuildName)
         self.btnBrowse.clicked.connect(self._doSelectPath)
         self.buttonBox.clicked.connect(self._dialogButtonClicked)
-        self.listFormats.itemSelectionChanged.connect(self._resetProgress)
+        self.listFormats.itemSelectionChanged.connect(self._handle_format_changed)
 
         logger.debug("Ready: GuiManuscriptBuild")
 
@@ -269,6 +307,8 @@ class GuiManuscriptBuild(NDialog):
         role = self.buttonBox.buttonRole(button)
         if role == QtRoleAction:
             if button == self.btnBuild:
+                if not self._before_build_proofread():
+                    return
                 self._runBuild()
             elif button == self.btnOpen:
                 self._openOutputFolder()
@@ -294,9 +334,93 @@ class GuiManuscriptBuild(NDialog):
         self._build.setLastBuildName(bName)
 
     @pyqtSlot()
+    def _handle_format_changed(self) -> None:
+        self._proofread_completed = not self.cbProofread.isChecked()
+        self._resetProgress()
+
+    @pyqtSlot()
     def _resetProgress(self) -> None:
         """Set the progress bar back to 0."""
         self.buildProgress.setValue(0)
+
+    def _resolve_proofread_availability(self) -> tuple[bool, Optional[str]]:
+        ai_config = getattr(CONFIG, "ai", None)
+        if ai_config is None:
+            return False, self.tr("AI configuration is not available.")
+        if not getattr(ai_config, "enabled", False):
+            return False, self.tr("AI features are disabled in Preferences.")
+        try:
+            api_key = getattr(ai_config, "api_key", "")
+        except AttributeError:
+            api_key = ""
+        key_from_env = getattr(ai_config, "api_key_from_env", False)
+        if not api_key and not key_from_env:
+            return False, self.tr("Configure an AI API key to enable proofreading.")
+        try:
+            __import__("novelwriter.ai")
+        except Exception as exc:  # pragma: no cover - environment dependent
+            message = str(exc) or exc.__class__.__name__
+            return False, self.tr("AI module could not be loaded: {0}").format(message)
+        return True, None
+
+    def _handle_proofread_toggle(self, state: int) -> None:
+        enabled = state == Qt.CheckState.Checked
+        ai_config = getattr(CONFIG, "ai", None)
+        if ai_config is not None:
+            ai_config.proofreading_enabled = enabled
+        self._proofread_completed = not enabled
+
+    def _collect_build_handles(self) -> List[str]:
+        filtered = self._build.buildItemFilter(SHARED.project)
+        handles: List[str] = []
+        for item in SHARED.project.tree:
+            handle = item.itemHandle
+            if not handle:
+                continue
+            include = filtered.get(handle)
+            if include and include[0]:
+                handles.append(handle)
+        return handles
+
+    def _handle_launch_proofread(self) -> None:
+        if not self._proofread_available:
+            reason = self._proofread_reason or self.tr("AI proofreading is not available.")
+            QMessageBox.information(self, self.tr("AI Proofreading"), reason)
+            return
+        if not self._run_proofread_dialog():
+            self._proofread_completed = False
+        else:
+            self._proofread_completed = True
+
+    def _run_proofread_dialog(self) -> bool:
+        handles = self._collect_build_handles()
+        if not handles:
+            QMessageBox.information(
+                self,
+                self.tr("AI Proofreading"),
+                self.tr("No documents are available for proofreading."),
+            )
+            return True
+        dialog = AICopilotProofreadDialog(handles, self)
+        result = dialog.exec()
+        if result == QDialog.Accepted:
+            if not dialog.completed_all:
+                QMessageBox.information(
+                    self,
+                    self.tr("AI Proofreading"),
+                    self.tr("Proofreading finished with some documents skipped."),
+                )
+            return True
+        return False
+
+    def _before_build_proofread(self) -> bool:
+        if not self._proofread_available or not self.cbProofread.isChecked():
+            return True
+        if self._proofread_completed:
+            return True
+        ok = self._run_proofread_dialog()
+        self._proofread_completed = ok
+        return ok
 
     ##
     #  Internal Functions

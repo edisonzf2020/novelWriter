@@ -10,7 +10,7 @@ from pathlib import Path
 import json
 import threading
 import time
-from typing import Any, Callable, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional
 from uuid import uuid4
 
 __all__ = [
@@ -103,6 +103,11 @@ class PerformanceSpan:
     # ------------------------------------------------------------------
     def add_output(self, chars: int) -> None:
         self.output_chars += max(0, int(chars))
+
+    def elapsed_ms(self) -> float:
+        """Return the elapsed wall-clock time in milliseconds."""
+
+        return (time.perf_counter() - self._started_perf) * 1000.0
 
     def mark_cache_hit(self, *, ttl: float, age: float) -> None:
         self.cache_status = "hit"
@@ -230,6 +235,32 @@ class PerformanceTracker:
                 self._samples.pop(0)
             self._write_log_entry(sample)
 
+    def log_event(self, name: str, metadata: Mapping[str, Any]) -> None:
+        """Write a custom observability event to the debug log."""
+
+        payload = dict(metadata) if metadata else {}
+        payload.setdefault("event", name)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        serialisable = {}
+        for key, value in payload.items():
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                serialisable[key] = value
+            else:
+                try:
+                    json.dumps(value)
+                    serialisable[key] = value
+                except TypeError:
+                    serialisable[key] = str(value)
+
+        try:
+            path = self._log_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            line = f"- {timestamp} | " + json.dumps(serialisable, ensure_ascii=True, sort_keys=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except Exception:  # pragma: no cover - logging must never break execution
+            return
+
     def _build_metadata(self, span: PerformanceSpan) -> Dict[str, Any]:
         payload = dict(span.metadata)
         if span.error:
@@ -310,3 +341,10 @@ def get_tracker() -> PerformanceTracker:
         if _tracker_instance is None:
             _tracker_instance = PerformanceTracker()
         return _tracker_instance
+
+
+def log_metric_event(name: str, metadata: Mapping[str, Any] | None = None) -> None:
+    """Append a custom metric event to the shared debug log."""
+
+    tracker = get_tracker()
+    tracker.log_event(name, metadata or {})

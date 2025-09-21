@@ -27,6 +27,8 @@ from novelwriter import CONFIG, SHARED
 from novelwriter.ai import NWAiApiError, TextRange
 
 from .handler import CopilotRequestManager
+from .diff_viewer import DiffPreviewController, DiffPreviewRequest, DiffPreviewWidget
+from .history_dialog import AICopilotHistoryDialog
 
 logger = logging.getLogger(__name__)
 
@@ -66,12 +68,13 @@ _QUICK_ACTION_TEMPLATES: Dict[str, Dict[str, object]] = {
 
 _STATUS_TEXT = {
     "ready": "Ready.",
-    "collecting_context": "Collecting context…",
-    "requesting_completion": "Contacting provider…",
-    "logging_conversation": "Recording conversation…",
+    "collecting_context": "Collecting context...",
+    "requesting_completion": "Contacting provider...",
+    "logging_conversation": "Recording conversation...",
     "completed": "Completed.",
     "cancelled": "Cancelled.",
     "error": "An error occurred.",
+    "preparing": "Preparing diff preview...",
 }
 
 
@@ -129,6 +132,7 @@ class AICopilotDock(QDockWidget):
         self._streaming_index: Optional[int] = None
         self._quick_actions: Dict[str, QuickActionDefinition] = {}
         self._request_manager: Optional[CopilotRequestManager] = None
+        self._diff_controller: Optional[DiffPreviewController] = None
         self._pending_suggestion: Optional[Dict[str, object]] = None
         self._active_action: Optional[str] = None
         self._request_in_progress: bool = False
@@ -183,6 +187,9 @@ class AICopilotDock(QDockWidget):
             if provider_changed and self._request_manager is not None and provider_id is not None:
                 self._request_manager.on_provider_changed(provider_id)
             self._toggle_interaction_enabled(not self._request_in_progress)
+            if hasattr(self, "_historyButton"):
+                self._historyButton.setEnabled(True)
+                self._historyButton.setToolTip("")
             self._set_status_message("ready")
         else:
             self._stack.setCurrentIndex(self._PLACEHOLDER_INDEX)
@@ -191,6 +198,11 @@ class AICopilotDock(QDockWidget):
                 or self.tr("AI features are currently disabled or missing optional dependencies.")
             )
             self._placeholderDetailLabel.setText(disabled_reason)
+            if hasattr(self, "_historyButton"):
+                self._historyButton.setEnabled(False)
+                self._historyButton.setToolTip(disabled_reason)
+            self._clear_pending_suggestion(rollback=True)
+            self._previewFrame.setVisible(False)
 
     def updateTheme(self) -> None:
         """Update fonts and colours to match the current theme."""
@@ -205,12 +217,14 @@ class AICopilotDock(QDockWidget):
         self._inputEdit.setFont(theme.guiFont)
         self._runStatusLabel.setFont(theme.guiFontSmall)
         self._previewTitleLabel.setFont(theme.guiFontB)
-        if self._previewBrowser.document():
-            self._previewBrowser.document().setDefaultFont(theme.guiFontFixed)
+        if hasattr(self, "_diffWidget"):
+            self._diffWidget.apply_theme(theme)
         if hasattr(self, "_modelLabel"):
             self._modelLabel.setFont(theme.guiFont)
         if hasattr(self, "_currentModelButton"):
             self._currentModelButton.setFont(theme.guiFont)
+        if hasattr(self, "_historyButton"):
+            self._historyButton.setFont(theme.guiFont)
         self._applyTranslations()
 
     ##
@@ -331,9 +345,7 @@ class AICopilotDock(QDockWidget):
         preview_layout.setContentsMargins(12, 12, 12, 12)
         preview_layout.setSpacing(8)
         self._previewTitleLabel = QLabel(self.tr("Suggestion preview"), self._previewFrame)
-        self._previewBrowser = QTextBrowser(self._previewFrame)
-        self._previewBrowser.setReadOnly(True)
-        self._previewBrowser.setLineWrapMode(QTextBrowser.LineWrapMode.NoWrap)
+        self._diffWidget = DiffPreviewWidget(self._previewFrame)
         preview_button_row = QHBoxLayout()
         preview_button_row.setContentsMargins(0, 0, 0, 0)
         preview_button_row.setSpacing(8)
@@ -346,7 +358,7 @@ class AICopilotDock(QDockWidget):
         preview_button_row.addWidget(self._applyButton)
 
         preview_layout.addWidget(self._previewTitleLabel)
-        preview_layout.addWidget(self._previewBrowser)
+        preview_layout.addWidget(self._diffWidget)
         preview_layout.addLayout(preview_button_row)
         self._previewFrame.setLayout(preview_layout)
         layout.addWidget(self._previewFrame)
@@ -396,6 +408,10 @@ class AICopilotDock(QDockWidget):
         row_layout.addWidget(self._scopeLabel)
         row_layout.addWidget(self._contextScopeSelector, stretch=1)
         row_layout.addStretch(1)
+        self._historyButton = QPushButton(self.tr("History"), frame)
+        self._historyButton.setObjectName("aiHistoryButton")
+        self._historyButton.clicked.connect(self._show_history_dialog)
+        row_layout.addWidget(self._historyButton)
         frame.setLayout(row_layout)
         self._populateScopeSelector()
         return frame
@@ -628,6 +644,32 @@ class AICopilotDock(QDockWidget):
         self._request_manager.requestFailed.connect(self._handle_failed)
         self._request_manager.requestCancelled.connect(self._handle_cancelled)
         self._request_manager.statusChanged.connect(self._handle_status_changed)
+
+    def _ensure_diff_controller(self) -> None:
+        """Initialise the diff preview controller when required."""
+
+        if self._diff_controller is not None:
+            return
+        if self._request_manager is None:
+            return
+
+        controller = DiffPreviewController(self._request_manager.api, self)
+        controller.previewReady.connect(self._handle_diff_ready)
+        controller.previewFailed.connect(self._handle_diff_failed)
+        controller.previewCancelled.connect(self._handle_diff_cancelled)
+        controller.statusChanged.connect(self._handle_diff_status)
+        self._diff_controller = controller
+
+    def _show_history_dialog(self) -> None:
+        """Open the modal dialog showing AI transaction history."""
+
+        self._ensure_request_manager()
+        if self._request_manager is None:
+            self._display_error(self.tr("History is unavailable."))
+            return
+
+        dialog = AICopilotHistoryDialog(self._request_manager.api, self)
+        dialog.exec()
 
     def _toggle_interaction_enabled(self, enabled: bool) -> None:
         if hasattr(self, "_quickActionButtons"):
@@ -863,42 +905,81 @@ class AICopilotDock(QDockWidget):
     ) -> None:
         if self._request_manager is None:
             return
-        api = self._request_manager.api
-        self._clear_pending_suggestion(rollback=True)
-        transaction_id = None
-        try:
-            transaction_id = api.begin_transaction()
-            text_range = TextRange(start=int(selection_range[0]), end=int(selection_range[1]))
-            suggestion = api.previewSuggestion(handle, text_range, suggestion_text)
-        except NWAiApiError as exc:
-            logger.error("Failed to build suggestion preview: %s", exc)
-            self._display_error(str(exc))
-            try:
-                if transaction_id:
-                    api.rollback_transaction(transaction_id)
-            except Exception:  # noqa: BLE001 - defensive cleanup
-                logger.debug("Rollback failed after preview error")
+        self._ensure_diff_controller()
+        if self._diff_controller is None:
+            self._display_error(self.tr("Unable to prepare diff preview."))
             return
 
-        diff_text = suggestion.diff or self.tr("No changes")
-        escaped_diff = html.escape(diff_text).replace("\n", "<br />")
-        self._previewBrowser.setHtml(escaped_diff)
-        self._previewFrame.setVisible(True)
+        self._clear_pending_suggestion(rollback=True)
         self._pending_suggestion = {
-            "transaction_id": transaction_id,
-            "suggestion_id": suggestion.id,
+            "transaction_id": None,
+            "suggestion_id": None,
             "handle": handle,
-            "range": selection_range,
+            "range": (int(selection_range[0]), int(selection_range[1])),
             "new_text": suggestion_text,
         }
+        self._applyButton.setEnabled(False)
+        self._previewFrame.setVisible(True)
+        self._diffWidget.show_progress(self.tr("Generating diff preview..."))
+
+        request = DiffPreviewRequest(
+            handle=handle,
+            selection_range=(int(selection_range[0]), int(selection_range[1])),
+            new_text=suggestion_text,
+        )
+        self._diff_controller.request_preview(request)
+
+    def _handle_diff_ready(self, result) -> None:
+        if self._pending_suggestion is None:
+            if self._request_manager is not None:
+                try:
+                    self._request_manager.api.rollback_transaction(result.transaction_id)
+                except Exception:  # noqa: BLE001 - defensive cleanup
+                    logger.debug("Rollback failed for orphaned diff result")
+            return
+
+        self._pending_suggestion["transaction_id"] = result.transaction_id
+        self._pending_suggestion["suggestion_id"] = result.suggestion.id
+        self._pending_suggestion["diff_stats"] = result.stats
+        self._pending_suggestion["request"] = result.request
+        self._diffWidget.display_result(result)
+        self._applyButton.setEnabled(True)
         self._set_status_message("ready")
+
+    def _handle_diff_failed(self, message: str) -> None:
+        if self._pending_suggestion and self._pending_suggestion.get("transaction_id"):
+            transaction_id = str(self._pending_suggestion.get("transaction_id"))
+            if self._request_manager is not None and transaction_id:
+                try:
+                    self._request_manager.api.rollback_transaction(transaction_id)
+                except Exception:  # noqa: BLE001 - defensive cleanup
+                    logger.debug("Rollback failed after diff error")
+        self._pending_suggestion = None
+        self._applyButton.setEnabled(False)
+        self._diffWidget.show_error(self.tr("Diff preview failed: {0}").format(message))
+        self._set_status_message("error")
+
+    def _handle_diff_cancelled(self) -> None:
+        if self._pending_suggestion is None:
+            return
+        self._applyButton.setEnabled(False)
+        self._diffWidget.show_placeholder(self.tr("Diff preview cancelled."))
+        self._set_status_message("cancelled")
+
+    def _handle_diff_status(self, status: str) -> None:
+        self._set_status_message(status)
 
     def _apply_suggestion(self) -> None:
         if not self._pending_suggestion or self._request_manager is None:
             return
         api = self._request_manager.api
-        suggestion_id = str(self._pending_suggestion["suggestion_id"])
-        transaction_id = str(self._pending_suggestion["transaction_id"])
+        suggestion_id = self._pending_suggestion.get("suggestion_id")
+        transaction_id = self._pending_suggestion.get("transaction_id")
+        if not suggestion_id or not transaction_id:
+            self._display_error(self.tr("Diff preview is still running."))
+            return
+        suggestion_id = str(suggestion_id)
+        transaction_id = str(transaction_id)
         handle = str(self._pending_suggestion["handle"])
         selection_range = self._pending_suggestion["range"]
         new_text = str(self._pending_suggestion["new_text"])
@@ -933,16 +1014,23 @@ class AICopilotDock(QDockWidget):
         self._render_messages()
 
     def _clear_pending_suggestion(self, rollback: bool) -> None:
+        if self._diff_controller is not None:
+            self._diff_controller.cancel_pending()
         if not self._pending_suggestion or self._request_manager is None:
+            self._pending_suggestion = None
+            if hasattr(self, "_applyButton"):
+                self._applyButton.setEnabled(False)
             return
+
         if rollback:
-            api = self._request_manager.api
-            transaction_id = str(self._pending_suggestion["transaction_id"])
-            try:
-                api.rollback_transaction(transaction_id)
-            except Exception:  # noqa: BLE001 - defensive guard
-                logger.debug("Rollback failed while clearing pending suggestion")
+            transaction_id = self._pending_suggestion.get("transaction_id")
+            if transaction_id:
+                try:
+                    self._request_manager.api.rollback_transaction(str(transaction_id))
+                except Exception:  # noqa: BLE001 - defensive guard
+                    logger.debug("Rollback failed while clearing pending suggestion")
         self._pending_suggestion = None
+        self._applyButton.setEnabled(False)
 
     def _refresh_editor_after_apply(
         self,
@@ -985,6 +1073,8 @@ class AICopilotDock(QDockWidget):
             self._applyButton.setText(self.tr("Apply"))
         if hasattr(self, "_dismissButton"):
             self._dismissButton.setText(self.tr("Dismiss"))
+        if hasattr(self, "_historyButton"):
+            self._historyButton.setText(self.tr("History"))
         if hasattr(self, "_inputEdit"):
             self._inputEdit.setPlaceholderText(
                 self.tr("Type a request or choose a quick action")

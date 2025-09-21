@@ -63,6 +63,7 @@ class AIConfig:
         "temperature",
         "dry_run_default",
         "ask_before_apply",
+        "proofreading_enabled",
         "openai_organisation",
         "extra_headers",
         "user_agent",
@@ -90,6 +91,7 @@ class AIConfig:
         self.temperature: float = 0.7
         self.dry_run_default: bool = True
         self.ask_before_apply: bool = True
+        self.proofreading_enabled: bool = False
         self.openai_organisation: str | None = None
         self.extra_headers: dict[str, str] | None = None
         self.user_agent: str | None = None
@@ -124,6 +126,7 @@ class AIConfig:
             and self.max_tokens == 2048
             and self.dry_run_default
             and self.ask_before_apply
+            and not self.proofreading_enabled
             and self.openai_organisation is None
             and (self.extra_headers is None or not self.extra_headers)
             and self.user_agent is None
@@ -155,6 +158,7 @@ class AIConfig:
         self.temperature = reader.get_float(section, "temperature", self.temperature)
         self.dry_run_default = reader.get_bool(section, "dry_run_default", self.dry_run_default)
         self.ask_before_apply = reader.get_bool(section, "ask_before_apply", self.ask_before_apply)
+        self.proofreading_enabled = reader.get_bool(section, "proofreading_enabled", self.proofreading_enabled)
         self.openai_organisation = self._normalise_optional(
             reader.get_str(section, "openai_organisation", self.openai_organisation or "")
         )
@@ -209,6 +213,7 @@ class AIConfig:
         conf[section]["temperature"] = str(self.temperature)
         conf[section]["dry_run_default"] = str(self.dry_run_default)
         conf[section]["ask_before_apply"] = str(self.ask_before_apply)
+        conf[section]["proofreading_enabled"] = str(self.proofreading_enabled)
         conf[section]["metrics_enabled"] = str(self.metrics_enabled)
         conf[section]["metrics_max_samples"] = str(self.metrics_max_samples)
         conf[section]["cache_enabled"] = str(self.cache_enabled)

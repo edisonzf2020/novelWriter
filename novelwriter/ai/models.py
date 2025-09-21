@@ -9,6 +9,7 @@ __all__ = [
     "DocumentRef",
     "TextRange",
     "Suggestion",
+    "ProofreadResult",
     "BuildResult",
     "ModelInfo",
 ]
@@ -39,6 +40,16 @@ class Suggestion:
     handle: str
     preview: str
     diff: Optional[str]
+
+
+@dataclass
+class ProofreadResult:
+    """Outcome of an AI proofreading request."""
+
+    transaction_id: str
+    suggestion: Suggestion
+    original_text: str
+    diff_stats: dict[str, int]
 
 
 @dataclass
