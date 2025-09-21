@@ -51,6 +51,7 @@ class StubResponses:
         self._stream_events = list(stream_events or [])
         self._create_error = create_error
         self._stream_error = stream_error
+        self.with_raw_response = StubWithRawResponse(self)
 
     def create(self, **_: Any) -> Any:
         if self._create_error is not None:
@@ -61,6 +62,32 @@ class StubResponses:
         if self._stream_error is not None:
             raise self._stream_error
         return StubStream(self._stream_events)
+
+
+class StubRawResponse:
+    def __init__(self, result: Any, headers: dict[str, str] | None = None) -> None:
+        self._result = result
+        self.headers = headers or {}
+
+    def parse(self) -> Any:
+        return self._result
+
+
+class StubWithRawResponse:
+    def __init__(self, parent: Any) -> None:
+        self._parent = parent
+
+    def create(self, **kwargs: Any) -> StubRawResponse:
+        result = self._parent.create(**kwargs)
+        # Extract max output tokens from the result's usage if available
+        max_tokens = "4096"  # default
+        if hasattr(result, 'usage') and result.usage and 'output_tokens' in result.usage:
+            max_tokens = str(result.usage['output_tokens'])
+        elif isinstance(result, dict) and 'usage' in result and 'completion_tokens' in result['usage']:
+            max_tokens = str(result['usage']['completion_tokens'])
+        
+        headers = {"x-openai-limit-max-output-tokens": max_tokens}
+        return StubRawResponse(result, headers)
 
 
 class StubChatCompletions:
@@ -74,6 +101,7 @@ class StubChatCompletions:
         self._create_result = create_result
         self._stream_events = list(stream_events or [])
         self._create_error = create_error
+        self.with_raw_response = StubWithRawResponse(self)
 
     def create(self, *, stream: bool = False, **_: Any) -> Any:
         if self._create_error is not None:

@@ -9,7 +9,7 @@ import pytest
 
 from novelwriter import CONFIG
 from novelwriter.ai import AIConfig, NWAiApi, NWAiApiError
-from novelwriter.ai.providers import OpenAICompatibleProvider, ProviderSettings
+from novelwriter.ai.providers import OpenAISDKProvider, ProviderSettings
 from novelwriter.core.project import NWProject
 
 from tests.tools import buildTestProject
@@ -26,10 +26,10 @@ def _make_transport(model_list: dict[str, Any], model_detail: dict[str, Any]) ->
     call_counter = {"list": 0, "detail": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/v1/models":
+        if request.url.path == "/models":
             call_counter["list"] += 1
             return httpx.Response(200, json=model_list)
-        if request.url.path.startswith("/v1/models/"):
+        if request.url.path.startswith("/models/"):
             call_counter["detail"] += 1
             return httpx.Response(200, json=model_detail)
         raise AssertionError(f"Unexpected path: {request.url.path}")
@@ -37,14 +37,14 @@ def _make_transport(model_list: dict[str, Any], model_detail: dict[str, Any]) ->
     return httpx.MockTransport(handler), call_counter
 
 
-def _new_provider(transport: httpx.MockTransport) -> OpenAICompatibleProvider:
+def _new_provider(transport: httpx.MockTransport) -> OpenAISDKProvider:
     settings = ProviderSettings(
         base_url="https://mock.api",
         api_key="token",
         model="gpt-test",
         transport=transport,
     )
-    return OpenAICompatibleProvider(settings)
+    return OpenAISDKProvider(settings)
 
 
 def test_openai_provider_lists_models_with_cache() -> None:
@@ -74,7 +74,7 @@ def test_openai_provider_lists_models_with_cache() -> None:
     first = provider.list_models()
 
     assert [item["id"] for item in first] == ["gpt-alpha", "gpt-beta"]
-    assert first[0]["metadata"]["id"] == "gpt-alpha"
+    assert first[0]["id"] == "gpt-alpha"
     assert counter["list"] == 1
 
     cached = provider.list_models()

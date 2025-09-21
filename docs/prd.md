@@ -176,16 +176,7 @@
 > **作为 novelWriter 的核心开发者，** 我希望将 `NWAiApi` 重构为一个独立的 `novelwriter.api` 包，
 > **以便** 实现更好的关注点分离，提升模块的可重用性，并为未来的插件系统或第三方集成打下坚实的基础。
 
-**用户故事 5.0: 提取 `NWAiApi` 到独立的 `api` 包**
-> **作为一名开发者，** 我需要将 `novelwriter/ai/api.py` 移动到新的 `novelwriter/api/` 目录下，并更新所有相关的引用，
-> **以便** 使 AI 模块单向依赖于新的 `api` 模块，从而优化项目架构。
-> **验收标准:**
-> *   `novelwriter/ai/api.py` 被移动到 `novelwriter/api/api.py`。
-> *   所有之前 `from novelwriter.ai.api import NWAiApi` 的引用都已更新为 `from novelwriter.api import NWAiApi`。
-> *   `novelwriter.ai` 包不再包含 `api.py`。
-> *   所有现有测试（尤其是 AI 相关的测试）都能成功通过，证明重构未破坏现有功能。
-
-**用户故事 5.1 (修正版): 统一并简化 OpenAI Provider**
+**用户故事 5.0: 统一并简化 OpenAI Provider**
 > **作为 novelWriter 的核心开发者，** 我希望将所有 OpenAI 兼容的连接逻辑统一到 `OpenAISDKProvider` 中，并移除基于 `httpx` 的 `OpenAICompatibleProvider`，
 > **以便** 减少代码冗余、降低维护成本，并利用官方 SDK 的稳定性与健壮性来统一处理所有 OpenAI 及其兼容端点的连接。
 > **验收标准:**

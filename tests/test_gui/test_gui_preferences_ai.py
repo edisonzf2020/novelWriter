@@ -39,7 +39,7 @@ def test_preferences_ai_updates_configuration(qtbot, monkeypatch, nwGUI) -> None
     assert dialog.aiDisabledMessage.isVisible() is True
     assert dialog.aiProviderAvailability.isVisible() is False
 
-    sdk_index = dialog.aiProvider.findData("openai-sdk")
+    sdk_index = dialog.aiProvider.findData("openai")
     assert sdk_index >= 0
     model = dialog.aiProvider.model()
     item_getter = getattr(model, "item", None)
@@ -52,7 +52,7 @@ def test_preferences_ai_updates_configuration(qtbot, monkeypatch, nwGUI) -> None
     dialog.aiEnabled.setChecked(True)
     assert dialog.aiProvider.isEnabled() is True
     assert dialog.aiDisabledMessage.isVisible() is False
-    assert dialog.aiProviderAvailability.isVisible() is False
+    assert dialog.aiProviderAvailability.isVisible() is True
 
     dialog.aiProvider.setCurrentIndex(sdk_index)
     qtbot.wait(10)
@@ -62,7 +62,8 @@ def test_preferences_ai_updates_configuration(qtbot, monkeypatch, nwGUI) -> None
 
     dialog.aiProvider.setCurrentIndex(dialog.aiProvider.findData("openai"))
     qtbot.wait(10)
-    assert dialog.aiProviderAvailability.isVisible() is False
+    # OpenAI SDK is not available, so availability message should remain visible
+    assert dialog.aiProviderAvailability.isVisible() is True
 
     dialog.aiBaseUrl.setText("https://example.test/v1")
     dialog.aiTimeout.setValue(55)

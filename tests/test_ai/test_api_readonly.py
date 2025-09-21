@@ -12,7 +12,7 @@ import pytest
 from novelwriter import CONFIG
 from novelwriter.ai import DocumentRef, NWAiApi, NWAiApiError
 from novelwriter.ai.config import AIConfig
-from novelwriter.ai.providers import OpenAICompatibleProvider, ProviderSettings
+from novelwriter.ai.providers import OpenAISDKProvider, ProviderSettings
 from novelwriter.core.project import NWProject
 from novelwriter.enum import nwItemClass
 
@@ -177,11 +177,11 @@ def test_get_provider_capabilities_returns_snapshot(
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         call_counter[path] += 1
-        if path == "/v1/responses":
-            return httpx.Response(200, json={"id": "resp", "usage": {"output_tokens": 2}})
-        if path == "/v1/chat/completions":
-            return httpx.Response(200, json={"id": "chat", "usage": {"completion_tokens": 1}})
-        if path == "/v1/models/test-model":
+        if path == "/responses":
+            return httpx.Response(200, json={"id": "resp", "usage": {"output_tokens": 2}}, headers={"x-openai-limit-max-output-tokens": "2048"})
+        if path == "/chat/completions":
+            return httpx.Response(200, json={"id": "chat", "usage": {"completion_tokens": 1}}, headers={"x-openai-limit-max-output-tokens": "1024"})
+        if path == "/models/test-model":
             return httpx.Response(200, json={"id": "test-model", "output_token_limit": 512})
         raise AssertionError(f"Unexpected path {path}")
 
@@ -192,7 +192,7 @@ def test_get_provider_capabilities_returns_snapshot(
         model="test-model",
         transport=transport,
     )
-    provider = OpenAICompatibleProvider(settings)
+    provider = OpenAISDKProvider(settings)
 
     def _fake_create_provider(self, *, transport=None):
         return provider
@@ -213,7 +213,7 @@ def test_get_provider_capabilities_returns_snapshot(
 
     refreshed = api.getProviderCapabilities(refresh=True)
     assert refreshed.supports_responses is True
-    assert call_counter["/v1/responses"] == 2
+    assert call_counter["/responses"] == 2
 
     api.resetProvider()
     assert provider._client is None  # type: ignore[attr-defined]

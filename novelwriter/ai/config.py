@@ -42,10 +42,8 @@ _ENV_API_KEY = "OPENAI_API_KEY"
 
 _PROVIDER_SYNONYMS: dict[str, str] = {
     "openai": "openai",
-    "openai-compatible": "openai",
-    "openai_compatible": "openai",
-    "openai-sdk": "openai-sdk",
-    "openai_sdk": "openai-sdk",
+    "openai-sdk": "openai",
+    "openai_sdk": "openai",
 }
 
 

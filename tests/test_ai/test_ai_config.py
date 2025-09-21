@@ -9,7 +9,7 @@ import pytest
 
 from novelwriter.ai.config import AIConfig
 from novelwriter.ai.errors import NWAiConfigError, NWAiProviderError
-from novelwriter.ai.providers import OpenAICompatibleProvider
+from novelwriter.ai.providers import OpenAISDKProvider
 from novelwriter.common import NWConfigParser
 
 def test_ai_config_defaults() -> None:
@@ -125,7 +125,11 @@ def test_ai_config_create_provider_uses_factory(monkeypatch: pytest.MonkeyPatch)
         path = request.url.path
         if path == "/v1/responses":
             call_counter["responses"] += 1
-            return httpx.Response(200, json={"id": "resp", "usage": {"output_tokens": 4}})
+            return httpx.Response(200, json={
+                "id": "resp", 
+                "usage": {"output_tokens": 4},
+                "output": [{"type": "text", "text": "pong"}]
+            })
         if path == "/v1/chat/completions":
             call_counter["chat"] += 1
             return httpx.Response(200, json={"id": "chat", "usage": {"completion_tokens": 2}})
@@ -143,7 +147,7 @@ def test_ai_config_create_provider_uses_factory(monkeypatch: pytest.MonkeyPatch)
 
     provider = cfg.create_provider(transport=transport)
 
-    assert isinstance(provider, OpenAICompatibleProvider)
+    assert isinstance(provider, OpenAISDKProvider)
     caps = provider.ensure_capabilities()
     assert caps.supports_responses is True
     assert call_counter["responses"] == 1
@@ -176,11 +180,12 @@ def test_ai_config_normalises_provider_identifier() -> None:
     cfg = AIConfig()
     cfg.load_from_main_config(parser)
 
-    assert cfg.provider == "openai-sdk"
+    assert cfg.provider == "openai"
 
     out = ConfigParser()
+    cfg.enabled = True  # Force saving by making it non-default
     cfg.save_to_main_config(out)
-    assert out.get("AI", "provider") == "openai-sdk"
+    assert out.get("AI", "provider") == "openai"
 
 
 def test_ai_config_create_provider_wraps_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:

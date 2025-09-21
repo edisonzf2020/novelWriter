@@ -415,7 +415,7 @@ def test_ai_copilot_status_shows_provider(monkeypatch, nwGUI) -> None:
             enabled=True,
             api_key="token",
             api_key_from_env=False,
-            provider="openai-sdk",
+            provider="openai",
         )
     )
     monkeypatch.setattr(
@@ -428,6 +428,6 @@ def test_ai_copilot_status_shows_provider(monkeypatch, nwGUI) -> None:
 
     status_label = dock.findChild(QLabel, "aiCopilotStatusMessage")
     assert status_label is not None
-    assert "OpenAI Official SDK" in status_label.text()
+    assert "OpenAI (SDK)" in status_label.text()
 
     dock.deleteLater()

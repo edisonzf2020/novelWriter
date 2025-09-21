@@ -820,11 +820,8 @@ class AICopilotDock(QDockWidget):
     def _provider_display_name(self) -> str:
         provider_id = self._current_provider_id or getattr(getattr(CONFIG, "ai", None), "provider", None)
         mapping = {
-            "openai": self.tr("OpenAI Compatible"),
-            "openai-compatible": self.tr("OpenAI Compatible"),
-            "openai_compatible": self.tr("OpenAI Compatible"),
-            "openai-sdk": self.tr("OpenAI Official SDK"),
-            "openai_sdk": self.tr("OpenAI Official SDK"),
+            "openai": self.tr("OpenAI (SDK)"),
+            "openai": self.tr("OpenAI (SDK)"),
         }
         if not provider_id:
             return ""

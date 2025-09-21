@@ -159,6 +159,7 @@ class OpenAISDKProvider(BaseProvider):
         self._client: Any | None = None
         self._http_client: Any | None = None
         self._models_cache: list[dict[str, Any]] | None = None
+        self._responses_input_mode: str = "array"  # Start with array, fallback to string if needed
         self._models_cache_fetched_at: datetime | None = None
 
     # ------------------------------------------------------------------
@@ -371,7 +372,8 @@ class OpenAISDKProvider(BaseProvider):
         }
 
         try:
-            response = client.responses.create(timeout=_PROBE_TIMEOUT, **payload)
+            raw_response = client.responses.with_raw_response.create(timeout=_PROBE_TIMEOUT, **payload)
+            response = raw_response.parse()
         except Exception as exc:  # noqa: BLE001 - capture and normalise
             return _normalise_exception(exc, endpoint="responses")
 
@@ -380,7 +382,20 @@ class OpenAISDKProvider(BaseProvider):
             "output_text": output_text,
             "usage": _safe_as_dict(getattr(response, "usage", None)),
         }
-        max_tokens = _extract_usage_limit(details["usage"], "output_tokens")
+        
+        # Try to get max_output_tokens from HTTP headers first
+        max_tokens = None
+        try:
+            header_limit = raw_response.headers.get("x-openai-limit-max-output-tokens")
+            if header_limit and header_limit.isdigit():
+                max_tokens = int(header_limit)
+        except (AttributeError, ValueError):
+            pass
+        
+        # Fallback to usage if header not available
+        if max_tokens is None:
+            max_tokens = _extract_usage_limit(details["usage"], "output_tokens")
+            
         return _ProbeResult(
             success=True,
             stream_supported=True,
@@ -402,7 +417,8 @@ class OpenAISDKProvider(BaseProvider):
             "stream": False,
         }
         try:
-            response = client.chat.completions.create(timeout=_PROBE_TIMEOUT, **payload)
+            raw_response = client.chat.completions.with_raw_response.create(timeout=_PROBE_TIMEOUT, **payload)
+            response = raw_response.parse()
         except Exception as exc:  # noqa: BLE001 - capture and normalise
             return _normalise_exception(exc, endpoint="chat.completions")
 
@@ -411,7 +427,20 @@ class OpenAISDKProvider(BaseProvider):
             "output_text": output_text,
             "usage": _safe_as_dict(getattr(response, "usage", None)),
         }
-        max_tokens = _extract_usage_limit(details["usage"], "completion_tokens")
+        
+        # Try to get max_output_tokens from HTTP headers first
+        max_tokens = None
+        try:
+            header_limit = raw_response.headers.get("x-openai-limit-max-output-tokens")
+            if header_limit and header_limit.isdigit():
+                max_tokens = int(header_limit)
+        except (AttributeError, ValueError):
+            pass
+        
+        # Fallback to usage if header not available
+        if max_tokens is None:
+            max_tokens = _extract_usage_limit(details["usage"], "completion_tokens")
+            
         return _ProbeResult(
             success=True,
             stream_supported=not lightweight,
@@ -435,8 +464,14 @@ class OpenAISDKProvider(BaseProvider):
     ) -> Any:
         payload = {
             "model": self.settings.model,
-            "input": _build_responses_input(messages),
         }
+        
+        # Use the determined input format
+        if self._responses_input_mode == "string":
+            payload["input"] = _build_responses_input_string(messages)
+        else:
+            payload["input"] = _build_responses_input(messages)
+            
         payload.update(_remap_responses_extra(extra))
         if tools:
             payload["tools"] = tools
@@ -448,7 +483,41 @@ class OpenAISDKProvider(BaseProvider):
                 return _ResponsesStreamAdapter(session)
             response = client.responses.create(timeout=timeout_value, **payload)
         except Exception as exc:  # noqa: BLE001 - normalise to provider error
-            raise _wrap_exception(exc, endpoint="responses") from exc
+            # Check if this is an input format error and we haven't tried string format yet
+            should_retry_with_string = False
+            
+            if self._responses_input_mode == "array":
+                # Check for APIStatusError with 400 status and specific message
+                if (_APIStatusError is not None and isinstance(exc, _APIStatusError) and
+                    getattr(exc, 'status_code', None) == 400):
+                    error_message = getattr(exc, 'message', '') or str(exc)
+                    if "Invalid type for 'input'" in error_message:
+                        should_retry_with_string = True
+                
+                # Also check for httpx.HTTPStatusError (used in tests)
+                elif hasattr(exc, 'response') and hasattr(exc.response, 'status_code'):
+                    if exc.response.status_code == 400:
+                        try:
+                            error_data = exc.response.json()
+                            error_message = error_data.get('error', {}).get('message', '')
+                            if "Invalid type for 'input'" in error_message:
+                                should_retry_with_string = True
+                        except (ValueError, AttributeError):
+                            pass
+            
+            if should_retry_with_string:
+                # Fallback to string input format
+                self._responses_input_mode = "string"
+                payload["input"] = _build_responses_input_string(messages)
+                try:
+                    if stream:
+                        session = client.responses.stream(timeout=timeout_value, **payload)
+                        return _ResponsesStreamAdapter(session)
+                    response = client.responses.create(timeout=timeout_value, **payload)
+                except Exception as fallback_exc:  # noqa: BLE001
+                    raise _wrap_exception(fallback_exc, endpoint="responses") from fallback_exc
+            else:
+                raise _wrap_exception(exc, endpoint="responses") from exc
 
         text = _collapse_responses_output(response)
         return _NonStreamingResponse(text)
@@ -658,11 +727,31 @@ def _build_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any
         )
     return adapted
 
+def _build_responses_input_string(messages: list[dict[str, Any]]) -> str:
+    """Build string format input for responses endpoint."""
+    parts = []
+    for message in messages:
+        role = message.get("role", "user")
+        content = message.get("content", "")
+        text_parts = list(_flatten_text_payload(content))
+        if text_parts:
+            combined_text = " ".join(text_parts)
+            parts.append(f"{role}: {combined_text}")
+    return "\n".join(parts)
+
 
 def _collapse_responses_output(response: Any) -> str:
     if response is None:
         return ""
-    output_text = getattr(response, "output_text", None)
+    
+    # Try to get output_text safely
+    output_text = None
+    try:
+        output_text = getattr(response, "output_text", None)
+    except (TypeError, AttributeError):
+        # output_text property may fail if response.output is None
+        pass
+    
     if output_text:
         if isinstance(output_text, str):
             return output_text

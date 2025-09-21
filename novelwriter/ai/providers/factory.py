@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Callable, Mapping
 from novelwriter.ai.errors import NWAiConfigError
 
 from .base import BaseProvider, ProviderSettings
-from .openai_compatible import OpenAICompatibleProvider
 from .openai_sdk import OpenAISDKProvider
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -19,11 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 _PROVIDER_REGISTRY: Mapping[str, Callable[[ProviderSettings], BaseProvider]] = {
-    "openai": OpenAICompatibleProvider,
-    "openai-compatible": OpenAICompatibleProvider,
-    "openai_compatible": OpenAICompatibleProvider,
-    "openai-sdk": OpenAISDKProvider,
-    "openai_sdk": OpenAISDKProvider,
+    "openai": OpenAISDKProvider,
 }
 
 
