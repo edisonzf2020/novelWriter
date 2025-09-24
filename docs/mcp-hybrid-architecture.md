@@ -1,9 +1,11 @@
 # novelWriter MCP混合架构设计文档
 
-**版本:** v1.0  
+**版本:** v1.1  
 **创建日期:** 2025年9月24日  
+**更新日期:** 2025年9月24日  
 **架构师:** Winston  
 **项目:** novelWriter AI Agent工具化增强  
+**开发分支:** `ai-agent`  
 **模板:** BMAD™ Brownfield Enhancement Architecture v2.0
 
 ---
@@ -102,10 +104,27 @@ novelwriter/
 - **Provider系统兼容**：现有的OpenAI SDK provider必须继续工作
 - **配置系统兼容**：现有AIConfig必须与新的混合配置集成
 
-### 1.3 变更日志
+### 1.3 开发分支信息
+
+⚠️ **重要开发信息**：
+- **开发分支**：`ai-agent`
+- **主分支状态**：`main`分支保持稳定，未包含本项目的开发内容
+- **分支策略**：所有AI Agent相关的开发工作都在`ai-agent`分支进行
+
+**分支切换命令**：
+```bash
+# 切换到开发分支
+git checkout ai-agent
+
+# 查看当前分支状态
+git status
+```
+
+### 1.4 变更日志
 
 | 变更 | 日期 | 版本 | 描述 | 作者 |
 |------|------|------|------|------|
+| 添加分支信息 | 2025-09-24 | v1.1 | 添加ai-agent分支开发信息 | Winston |
 | 初始创建 | 2025-09-24 | v1.0 | 基于BMAD模板创建混合MCP架构文档 | Winston |
 
 ---
@@ -672,6 +691,11 @@ def test_local_tool_call_latency(self, hybrid_server):
 ```
 按照此架构文档开始实施，重点关注：
 
+⚠️ 开发分支要求：
+- 所有开发工作必须在 `ai-agent` 分支进行
+- 切换命令：git checkout ai-agent
+- 禁止在 `main` 分支直接开发
+
 技术栈确认：
 - Python 3.10+：现有要求，完全兼容
 - MCP Python SDK：官方实现，pip install "novelwriter[ai-mcp]"
@@ -679,10 +703,11 @@ def test_local_tool_call_latency(self, hybrid_server):
 - Pydantic v2：数据验证，与MCP协议集成
 
 测试环境设置：
-1. 激活虚拟环境：source writer/bin/activate
-2. 运行测试命令：source writer/bin/activate && export QT_SCALE_FACTOR=1 && pytest --compat-env-file=test.env
-3. 真实AI测试：test.env包含AI endpoint配置，用于集成测试验证
-4. 确保所有新功能都在真实AI环境中测试通过
+1. 切换到开发分支：git checkout ai-agent
+2. 激活虚拟环境：source writer/bin/activate
+3. 运行测试命令：source writer/bin/activate && export QT_SCALE_FACTOR=1 && pytest --compat-env-file=test.env
+4. 真实AI测试：test.env包含AI endpoint配置，用于集成测试验证
+5. 确保所有新功能都在真实AI环境中测试通过
 
 架构原则严格遵循：
 1. 统一API访问：所有模块都通过NovelWriterAPI访问数据

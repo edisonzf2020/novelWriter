@@ -11,7 +11,8 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
 from novelwriter import CONFIG, SHARED
-from novelwriter.ai import NWAiApi, NWAiApiError
+from novelwriter.ai import NWAiApi, NWAiApiError, AICoreService
+from novelwriter.api import NovelWriterAPI
 from novelwriter.ai.threading import AiCancellationToken, AiTaskHandle, get_ai_executor
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -248,7 +249,11 @@ class CopilotRequestManager(QObject):
 
     def __init__(self) -> None:
         super().__init__()
+        # Keep NWAiApi for backward compatibility
         self._api = NWAiApi(SHARED.project)
+        # Also initialize new architecture components (for future migration)
+        # self._unified_api = NovelWriterAPI(SHARED.project)
+        # self._ai_core = AICoreService(self._unified_api)
         self._worker: Optional[CopilotWorker] = None
         self._task: Optional[AiTaskHandle] = None
         self._provider_id: Optional[str] = getattr(CONFIG.ai, "provider", None)

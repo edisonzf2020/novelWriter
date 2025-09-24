@@ -1,6 +1,7 @@
 """Core AI domain package for the novelWriter AI Copilot."""
 
-from .api import NWAiApi
+from .api import NWAiApi  # Keep for backward compatibility
+from .ai_core import AICoreService  # New AI core service
 from .config import AIConfig
 from .errors import (
     NWAiApiError,
@@ -11,7 +12,8 @@ from .errors import (
 from .models import BuildResult, DocumentRef, ModelInfo, ProofreadResult, Suggestion, TextRange
 
 __all__ = [
-    "NWAiApi",
+    "NWAiApi",  # Keep for backward compatibility
+    "AICoreService",  # New AI core service
     "AIConfig",
     "NWAiError",
     "NWAiApiError",
