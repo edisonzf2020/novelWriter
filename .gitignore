@@ -71,6 +71,7 @@ ToC.txt
 .bmad-core/
 .bmad-*/
 
+.windsurf
 .claude
 .clinerules
 .cursor
@@ -80,5 +81,7 @@ ToC.txt
 
 flattened-codebase.xml
 flattened-codebase.stats.md
+novelWriter-ai.xml
 
 *.env
+.DS_Store
