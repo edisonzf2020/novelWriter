@@ -584,7 +584,27 @@ class HybridMCPServer:
         pass
 ```
 
-### 10.3 测试策略集成
+### 10.3 项目测试环境配置
+
+**虚拟环境设置**：
+```bash
+# 激活项目虚拟环境
+source writer/bin/activate
+```
+
+**测试执行方法**：
+```bash
+# 完整的测试执行命令
+source writer/bin/activate && export QT_SCALE_FACTOR=1 && pytest --compat-env-file=test.env
+```
+
+**测试环境配置文件**：
+- **test.env**：包含AI endpoint配置的环境文件
+- **用途**：提供真实AI环境的配置，用于集成测试
+- **位置**：项目根目录 `/test.env`
+- **重要性**：使用此配置可以测试真实的AI功能集成
+
+### 10.4 测试策略集成
 
 **现有测试框架扩展**：
 ```python
@@ -657,6 +677,12 @@ def test_local_tool_call_latency(self, hybrid_server):
 - MCP Python SDK：官方实现，pip install "novelwriter[ai-mcp]"
 - FastMCP + streamable-http：最优性能传输协议
 - Pydantic v2：数据验证，与MCP协议集成
+
+测试环境设置：
+1. 激活虚拟环境：source writer/bin/activate
+2. 运行测试命令：source writer/bin/activate && export QT_SCALE_FACTOR=1 && pytest --compat-env-file=test.env
+3. 真实AI测试：test.env包含AI endpoint配置，用于集成测试验证
+4. 确保所有新功能都在真实AI环境中测试通过
 
 架构原则严格遵循：
 1. 统一API访问：所有模块都通过NovelWriterAPI访问数据

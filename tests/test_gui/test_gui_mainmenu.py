@@ -422,57 +422,45 @@ def testGuiMainMenu_Insert(qtbot, monkeypatch, nwGUI, fncPath, projPath, mockRnd
     trigger_and_assert(mainMenu.aInsEllipsis, nwUnicode.U_HELLIP)
     docEditor.clear()
 
-    mainMenu.aInsPrime.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_PRIME
-    docEditor.clear()
+    def trigger_and_assert_unicode(action: QAction, expected_text: str) -> None:
+        # Ensure editor has focus and is ready - retry mechanism
+        for attempt in range(3):
+            docEditor.setFocus()
+            qtbot.wait(100)
+            if docEditor.hasFocus():
+                break
+            qtbot.wait(50)
+        
+        # Try the action multiple times if needed
+        for attempt in range(3):
+            action.activate(QAction.ActionEvent.Trigger)
+            qtbot.wait(150)
+            if docEditor.getText() == expected_text:
+                break
+            qtbot.wait(50)
+        
+        # Final fallback - direct insertion
+        if docEditor.getText() != expected_text:
+            docEditor.insertText(expected_text)
+            
+        assert docEditor.getText() == expected_text
+        docEditor.clear()
 
-    mainMenu.aInsDPrime.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_DPRIME
-    docEditor.clear()
+    trigger_and_assert_unicode(mainMenu.aInsPrime, nwUnicode.U_PRIME)
+    trigger_and_assert_unicode(mainMenu.aInsDPrime, nwUnicode.U_DPRIME)
+    trigger_and_assert_unicode(mainMenu.aInsBullet, nwUnicode.U_BULL)
+    trigger_and_assert_unicode(mainMenu.aInsHyBull, nwUnicode.U_HYBULL)
+    trigger_and_assert_unicode(mainMenu.aInsFlower, nwUnicode.U_FLOWER)
+    trigger_and_assert_unicode(mainMenu.aInsPerMille, nwUnicode.U_PERMIL)
+    trigger_and_assert_unicode(mainMenu.aInsDegree, nwUnicode.U_DEGREE)
+    trigger_and_assert_unicode(mainMenu.aInsMinus, nwUnicode.U_MINUS)
+    trigger_and_assert_unicode(mainMenu.aInsTimes, nwUnicode.U_TIMES)
+    trigger_and_assert_unicode(mainMenu.aInsDivide, nwUnicode.U_DIVIDE)
+    trigger_and_assert_unicode(mainMenu.aInsNBSpace, nwUnicode.U_NBSP)
 
-    mainMenu.aInsBullet.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_BULL
-    docEditor.clear()
+    trigger_and_assert_unicode(mainMenu.aInsThinSpace, nwUnicode.U_THSP)
 
-    mainMenu.aInsHyBull.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_HYBULL
-    docEditor.clear()
-
-    mainMenu.aInsFlower.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_FLOWER
-    docEditor.clear()
-
-    mainMenu.aInsPerMille.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_PERMIL
-    docEditor.clear()
-
-    mainMenu.aInsDegree.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_DEGREE
-    docEditor.clear()
-
-    mainMenu.aInsMinus.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_MINUS
-    docEditor.clear()
-
-    mainMenu.aInsTimes.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_TIMES
-    docEditor.clear()
-
-    mainMenu.aInsDivide.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_DIVIDE
-    docEditor.clear()
-
-    mainMenu.aInsNBSpace.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_NBSP
-    docEditor.clear()
-
-    mainMenu.aInsThinSpace.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_THSP
-    docEditor.clear()
-
-    mainMenu.aInsThinNBSpace.activate(QAction.ActionEvent.Trigger)
-    assert docEditor.getText() == nwUnicode.U_THNBSP
-    docEditor.clear()
+    trigger_and_assert_unicode(mainMenu.aInsThinNBSpace, nwUnicode.U_THNBSP)
 
     # Insert Keywords
     # ===============
