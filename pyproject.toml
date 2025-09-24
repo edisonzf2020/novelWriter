@@ -39,6 +39,12 @@ ai = [
 ai-openai = [
     "openai>=1.0,<2.0",
 ]
+ai-mcp = [
+    "mcp>=1.14,<2.0",
+    "pydantic>=2.11,<3.0",
+    "httpx>=0.28,<0.29",
+    "pytest-asyncio>=1.2,<2.0",
+]
 
 [project.urls]
 Homepage = "https://novelwriter.io"

@@ -1,11 +1,12 @@
-"""novelWriter – API Exceptions.
-============================
+"""
+novelWriter – API Exceptions
+=============================
 
 Unified exception handling for the API module.
 
 File History:
 Created: 2025-09-24 [MCP-v1.0] API Exceptions
-
+Updated: 2025-09-24 [MCP-v1.0] API Exceptions
 This file is a part of novelWriter
 Copyright (C) 2025 Veronica Berglyd Olsen and novelWriter contributors
 
@@ -125,3 +126,73 @@ class APIOperationError(APIError):
         super().__init__(message, error_details)
         self.operation = operation
         self.cause = cause
+
+
+# MCP-specific exceptions
+
+class MCPServerError(APIError):
+    """Raised when MCP server encounters an error."""
+    pass
+
+
+class MCPToolNotFoundError(APINotFoundError):
+    """Raised when a requested MCP tool is not found."""
+    
+    def __init__(self, message: str, tool_name: str | None = None, **details: Any) -> None:
+        """Initialize a tool not found error.
+        
+        Args:
+            message: Error message
+            tool_name: Name of the tool not found
+            **details: Additional error details
+        """
+        super().__init__(message, resource_type="tool", resource_id=tool_name, **details)
+        self.tool_name = tool_name
+
+
+class MCPConnectionError(APIError):
+    """Raised when MCP connection fails."""
+    
+    def __init__(self, message: str, connection_id: str | None = None,
+                 server_url: str | None = None, **details: Any) -> None:
+        """Initialize a connection error.
+        
+        Args:
+            message: Error message
+            connection_id: Connection identifier
+            server_url: Server URL
+            **details: Additional error details
+        """
+        error_details = {"connection_id": connection_id, "server_url": server_url, **details}
+        super().__init__(message, error_details)
+        self.connection_id = connection_id
+        self.server_url = server_url
+
+
+class MCPAuthenticationError(APIPermissionError):
+    """Raised when MCP authentication fails."""
+    pass
+
+
+class MCPValidationError(APIValidationError):
+    """Raised when MCP parameter validation fails."""
+    pass
+
+
+class MCPExecutionError(APIOperationError):
+    """Raised when MCP tool execution fails."""
+    
+    def __init__(self, message: str, tool_name: str | None = None,
+                 execution_time_ms: int | None = None, **details: Any) -> None:
+        """Initialize an execution error.
+        
+        Args:
+            message: Error message
+            tool_name: Name of the tool that failed
+            execution_time_ms: Execution time before failure
+            **details: Additional error details
+        """
+        error_details = {"tool_name": tool_name, "execution_time_ms": execution_time_ms, **details}
+        super().__init__(message, operation=f"execute_tool:{tool_name}", **error_details)
+        self.tool_name = tool_name
+        self.execution_time_ms = execution_time_ms
