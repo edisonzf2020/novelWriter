@@ -48,6 +48,12 @@ from .base.security import (
     RiskLevel,
     get_security_controller,
 )
+from .base.performance import (
+    PerformanceMonitor,
+    MetricType,
+    get_performance_monitor,
+    set_performance_monitor,
+)
 
 if TYPE_CHECKING:
     from novelwriter.core.project import NWProject
@@ -66,11 +72,17 @@ def validateParams(func: F) -> F:
     Validates that required parameters are present and have the correct type.
     Measures execution time and logs performance metrics.
     Integrates with SecurityController for audit logging.
+    Integrates with PerformanceMonitor for metrics collection.
     """
     @wraps(func)
     def wrapper(self: NovelWriterAPI, *args: Any, **kwargs: Any) -> Any:
         start_time = time.perf_counter()
         method_name = func.__name__
+        operation_id = None
+        
+        # Start performance tracking
+        if self._performance_monitor:
+            operation_id = self._performance_monitor.start_operation("api", method_name)
 
         try:
             # Log API call
@@ -87,6 +99,10 @@ def validateParams(func: F) -> F:
 
             # Measure performance
             elapsed_ms = (time.perf_counter() - start_time) * 1000
+            
+            # End performance tracking (success)
+            if self._performance_monitor and operation_id:
+                self._performance_monitor.end_operation(operation_id, success=True)
             
             # Audit log successful operation
             if self._security_controller and self._security_context:
@@ -105,7 +121,15 @@ def validateParams(func: F) -> F:
 
             return result
 
-        except APIError:
+        except APIError as e:
+            # End performance tracking (failure)
+            if self._performance_monitor and operation_id:
+                self._performance_monitor.end_operation(
+                    operation_id, 
+                    success=False,
+                    metadata={"error_type": type(e).__name__}
+                )
+            
             # Audit log error
             if self._security_controller and self._security_context:
                 self._security_controller.audit_logger.log(
@@ -118,6 +142,14 @@ def validateParams(func: F) -> F:
             # Re-raise API errors as-is
             raise
         except Exception as e:
+            # End performance tracking (failure)
+            if self._performance_monitor and operation_id:
+                self._performance_monitor.end_operation(
+                    operation_id,
+                    success=False,
+                    metadata={"error_type": type(e).__name__, "error": str(e)}
+                )
+            
             # Audit log error
             if self._security_controller and self._security_context:
                 self._security_controller.audit_logger.log(
@@ -241,11 +273,12 @@ class NovelWriterAPI:
     """
 
     __slots__ = ("_cache", "_initialized", "_project", "_readOnly", 
-                 "_security_controller", "_security_context")
+                 "_security_controller", "_security_context", "_performance_monitor")
 
     def __init__(self, project: NWProject | None = None,
                  readOnly: bool = False,
                  enable_security: bool = True,
+                 enable_performance: bool = True,
                  session_id: Optional[str] = None) -> None:
         """Initialize the NovelWriter API.
 
@@ -253,6 +286,7 @@ class NovelWriterAPI:
             project: The NWProject instance to wrap (can be set later)
             readOnly: Whether to enforce read-only access
             enable_security: Whether to enable security features
+            enable_performance: Whether to enable performance monitoring
             session_id: Optional session ID for security context
 
         """
@@ -280,6 +314,16 @@ class NovelWriterAPI:
         else:
             self._security_controller = None
             self._security_context = None
+        
+        # Initialize performance monitor
+        if enable_performance:
+            self._performance_monitor = get_performance_monitor()
+            if not self._performance_monitor:
+                # Create a new monitor if none exists
+                self._performance_monitor = PerformanceMonitor()
+                set_performance_monitor(self._performance_monitor)
+        else:
+            self._performance_monitor = None
 
         if project is not None:
             self._initialize()
@@ -930,6 +974,89 @@ class NovelWriterAPI:
 
         return stats
 
+    # ======================================================================
+    # Performance Monitoring Methods
+    # ======================================================================
+    
+    def getPerformanceStatistics(self, component: str = "api", 
+                                 operation: str = "*",
+                                 window_minutes: int = 5) -> dict[str, Any]:
+        """Get performance statistics.
+        
+        Args:
+            component: Component name or "*" for all
+            operation: Operation name or "*" for all
+            window_minutes: Time window in minutes
+            
+        Returns:
+            Performance statistics dictionary
+        """
+        if not self._performance_monitor:
+            return {}
+        
+        if component == "*" and operation == "*":
+            # Get all statistics
+            all_stats = self._performance_monitor.get_all_statistics(window_minutes)
+            return {
+                "statistics": [
+                    {
+                        "component": s.component,
+                        "operation": s.operation,
+                        "count": s.count,
+                        "mean": s.mean,
+                        "p95": s.p95,
+                        "p99": s.p99,
+                        "success_rate": s.success_rate,
+                        "error_count": s.error_count
+                    }
+                    for s in all_stats
+                ]
+            }
+        else:
+            # Get specific statistics
+            stats = self._performance_monitor.get_statistics(
+                component, operation, window_minutes
+            )
+            return {
+                "component": stats.component,
+                "operation": stats.operation,
+                "count": stats.count,
+                "mean": stats.mean,
+                "min": stats.min,
+                "max": stats.max,
+                "p50": stats.p50,
+                "p95": stats.p95,
+                "p99": stats.p99,
+                "std_dev": stats.std_dev,
+                "success_rate": stats.success_rate,
+                "error_count": stats.error_count
+            }
+    
+    def getPerformanceAlerts(self) -> list[dict[str, Any]]:
+        """Get active performance alerts.
+        
+        Returns:
+            List of active alerts
+        """
+        if not self._performance_monitor:
+            return []
+        
+        alerts = self._performance_monitor.get_active_alerts()
+        return [
+            {
+                "id": alert.id,
+                "level": alert.level,
+                "metric_type": alert.metric_type.value,
+                "component": alert.component,
+                "operation": alert.operation,
+                "message": alert.message,
+                "current_value": alert.current_value,
+                "threshold_value": alert.threshold_value,
+                "timestamp": alert.timestamp.isoformat()
+            }
+            for alert in alerts
+        ]
+    
     # ======================================================================
     # Utility Methods
     # ======================================================================
