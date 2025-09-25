@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import random
 import threading
 import time
 from collections import defaultdict, deque
@@ -141,7 +142,6 @@ class TDigest:
     
     def add(self, value: float, weight: int = 1) -> None:
         """Add a value to the digest using reservoir sampling."""
-        import random
         with self._lock:
             # Add the value 'weight' times
             for _ in range(weight):
@@ -202,12 +202,13 @@ class SlidingWindowStats:
     
     def add(self, value: float, timestamp: Optional[datetime] = None) -> None:
         """Add a value to the window."""
+        now = datetime.now()
         if timestamp is None:
-            timestamp = datetime.now()
+            timestamp = now
         
         with self._lock:
             # Remove old data
-            cutoff = datetime.now() - timedelta(seconds=self.window_size)
+            cutoff = now - timedelta(seconds=self.window_size)
             while self.data and self.data[0][1] < cutoff:
                 self.data.popleft()
             
