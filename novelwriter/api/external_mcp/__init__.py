@@ -26,5 +26,27 @@ from __future__ import annotations
 from novelwriter.api.external_mcp.connection import MCPConnection, ConnectionPool
 from novelwriter.api.external_mcp.discovery import ToolDiscovery
 from novelwriter.api.external_mcp.client import MCPClient
+from novelwriter.api.external_mcp.cache import ExternalMCPCache, CacheManager
+from novelwriter.api.external_mcp.health_check import (
+    HealthChecker, HealthStatus, HealthCheckResult, CircuitBreaker
+)
+from novelwriter.api.external_mcp.exceptions import (
+    ExternalMCPError, ExternalMCPConnectionError, ExternalMCPTimeoutError,
+    ExternalToolTimeoutError, ExternalToolNotFoundError
+)
 
-__all__ = ["MCPConnection", "ConnectionPool", "ToolDiscovery", "MCPClient"]
+__all__ = [
+    # Connection management
+    "MCPConnection", "ConnectionPool",
+    # Discovery
+    "ToolDiscovery", 
+    # Client
+    "MCPClient",
+    # Cache
+    "ExternalMCPCache", "CacheManager",
+    # Health check
+    "HealthChecker", "HealthStatus", "HealthCheckResult", "CircuitBreaker",
+    # Exceptions
+    "ExternalMCPError", "ExternalMCPConnectionError", "ExternalMCPTimeoutError",
+    "ExternalToolTimeoutError", "ExternalToolNotFoundError"
+]
