@@ -387,3 +387,66 @@ class ToolRegistry:
                 results[name] = True  # No health check means assumed healthy
         
         return results
+    
+    def discoverLocalTools(self, api_instance: Any) -> None:
+        """
+        Automatically discover and register local tools.
+        
+        Args:
+            api_instance: NovelWriterAPI instance to pass to tools
+        """
+        from novelwriter.api.tools.base import BaseTool
+        from novelwriter.api.tools.project_tools import ProjectInfoTool, ProjectTreeTool
+        from novelwriter.api.tools.document_tools import (
+            DocumentListTool, DocumentReadTool, DocumentWriteTool, CreateDocumentTool
+        )
+        from novelwriter.api.tools.search_tools import (
+            GlobalSearchTool, TagListTool, ProjectStatsTool
+        )
+        
+        # List of tool classes to auto-discover
+        tool_classes = [
+            # Project tools
+            ProjectInfoTool,
+            ProjectTreeTool,
+            
+            # Document tools
+            DocumentListTool,
+            DocumentReadTool,
+            DocumentWriteTool,
+            CreateDocumentTool,
+            
+            # Search tools
+            GlobalSearchTool,
+            TagListTool,
+            ProjectStatsTool
+        ]
+        
+        # Register each tool
+        for tool_class in tool_classes:
+            try:
+                # Instantiate tool
+                tool_instance = tool_class(api_instance)
+                
+                # Create async wrapper for execute method
+                async def tool_handler(**params):
+                    return await tool_instance.execute(**params)
+                
+                # Register with metadata from tool
+                metadata = tool_instance.metadata
+                self.registerTool(
+                    name=metadata.name,
+                    handler=tool_handler,
+                    description=metadata.description,
+                    parameters_schema=metadata.parameters_schema,
+                    required_permissions=set(metadata.required_permissions),
+                    is_async=True,
+                    category=metadata.tags[0] if metadata.tags else "general"
+                )
+                
+                logger.info(f"Auto-discovered and registered tool: {metadata.name}")
+                
+            except Exception as e:
+                logger.error(f"Failed to auto-discover tool {tool_class.__name__}: {e}")
+        
+        logger.info(f"Auto-discovery complete: {len(tool_classes)} tools registered")

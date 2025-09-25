@@ -26,4 +26,39 @@ from __future__ import annotations
 from novelwriter.api.tools.registry import ToolRegistry
 from novelwriter.api.tools.local_tools import LocalToolWrapper
 
-__all__ = ["ToolRegistry", "LocalToolWrapper"]
+# Import base classes
+from novelwriter.api.tools.base import (
+    BaseTool, ToolMetadata, ToolPermission, ToolExecutionResult
+)
+
+# Import project tools
+from novelwriter.api.tools.project_tools import (
+    ProjectInfoTool, ProjectTreeTool
+)
+
+# Import document tools
+from novelwriter.api.tools.document_tools import (
+    DocumentListTool, DocumentReadTool, DocumentWriteTool, CreateDocumentTool
+)
+
+# Import search tools
+from novelwriter.api.tools.search_tools import (
+    GlobalSearchTool, TagListTool, ProjectStatsTool
+)
+
+__all__ = [
+    # Registry and wrapper
+    "ToolRegistry", "LocalToolWrapper",
+    
+    # Base classes
+    "BaseTool", "ToolMetadata", "ToolPermission", "ToolExecutionResult",
+    
+    # Project tools
+    "ProjectInfoTool", "ProjectTreeTool",
+    
+    # Document tools
+    "DocumentListTool", "DocumentReadTool", "DocumentWriteTool", "CreateDocumentTool",
+    
+    # Search tools
+    "GlobalSearchTool", "TagListTool", "ProjectStatsTool"
+]
