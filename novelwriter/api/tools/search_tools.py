@@ -1,5 +1,4 @@
-"""
-novelWriter – Search and Tag Tools Implementation
+"""novelWriter – Search and Tag Tools Implementation.
 ==================================================
 
 File History:
@@ -24,12 +23,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 from collections import Counter
 
 from novelwriter.api.tools.base import (
-    BaseTool, ToolMetadata, ToolPermission, ToolExecutionResult,
-    monitor_performance, requires_permission,
+    BaseTool, ToolMetadata, ToolPermission, monitor_performance, requires_permission,
     GlobalSearchParams, TagListParams
 )
 
@@ -37,10 +35,10 @@ logger = logging.getLogger(__name__)
 
 
 class GlobalSearchTool(BaseTool):
-    """全局搜索工具"""
-    
+    """全局搜索工具."""
+
     def _build_metadata(self) -> ToolMetadata:
-        """构建工具元数据"""
+        """构建工具元数据."""
         return ToolMetadata(
             name="global_search",
             description="在项目中进行全文搜索、标题搜索或标签搜索",
@@ -81,22 +79,22 @@ class GlobalSearchTool(BaseTool):
             required_permissions=[ToolPermission.READ],
             tags=["search", "query", "find"]
         )
-    
+
     @monitor_performance
     @requires_permission(ToolPermission.READ)
-    async def _execute_impl(self, **parameters) -> Dict[str, Any]:
-        """
-        执行全局搜索
-        
+    async def _execute_impl(self, **parameters) -> dict[str, Any]:
+        """执行全局搜索.
+
         Args:
             **parameters: 工具参数
-            
+
         Returns:
             搜索结果
+
         """
         # 验证参数
         params = GlobalSearchParams(**parameters)
-        
+
         # 执行搜索
         search_results = self._api.searchProject(
             query=params.query,
@@ -104,10 +102,10 @@ class GlobalSearchTool(BaseTool):
             case_sensitive=params.case_sensitive,
             whole_word=params.whole_word
         )
-        
+
         # 限制结果数量
         limited_results = search_results[:params.max_results]
-        
+
         # 格式化搜索结果
         formatted_results = []
         for result in limited_results:
@@ -119,7 +117,7 @@ class GlobalSearchTool(BaseTool):
                 "context": result.get("context"),
                 "score": result.get("score", 1.0)
             }
-            
+
             # 添加高亮信息
             if params.search_type == "content":
                 formatted_result["highlighted_text"] = self._highlight_match(
@@ -127,9 +125,9 @@ class GlobalSearchTool(BaseTool):
                     params.query,
                     params.case_sensitive
                 )
-            
+
             formatted_results.append(formatted_result)
-        
+
         # 统计信息
         stats = {
             "total_matches": len(search_results),
@@ -138,24 +136,24 @@ class GlobalSearchTool(BaseTool):
             "search_type": params.search_type,
             "query_length": len(params.query)
         }
-        
+
         return {
             "query": params.query,
             "results": formatted_results,
             "statistics": stats
         }
-    
+
     def _highlight_match(self, text: str, query: str, case_sensitive: bool) -> str:
-        """
-        高亮匹配文本
-        
+        """高亮匹配文本.
+
         Args:
             text: 原始文本
             query: 查询字符串
             case_sensitive: 是否区分大小写
-            
+
         Returns:
             带高亮标记的文本
+
         """
         if not case_sensitive:
             # 不区分大小写的替换
@@ -168,10 +166,10 @@ class GlobalSearchTool(BaseTool):
 
 
 class TagListTool(BaseTool):
-    """标签列表获取工具"""
-    
+    """标签列表获取工具."""
+
     def _build_metadata(self) -> ToolMetadata:
-        """构建工具元数据"""
+        """构建工具元数据."""
         return ToolMetadata(
             name="tag_list",
             description="获取项目中所有标签及其使用统计",
@@ -196,29 +194,29 @@ class TagListTool(BaseTool):
             required_permissions=[ToolPermission.READ],
             tags=["tag", "list", "metadata"]
         )
-    
+
     @monitor_performance
     @requires_permission(ToolPermission.READ)
-    async def _execute_impl(self, **parameters) -> Dict[str, Any]:
-        """
-        执行标签列表获取
-        
+    async def _execute_impl(self, **parameters) -> dict[str, Any]:
+        """执行标签列表获取.
+
         Args:
             **parameters: 工具参数
-            
+
         Returns:
             标签列表和统计
+
         """
         # 验证参数
         params = TagListParams(**parameters)
-        
+
         # 获取标签列表
         tag_list = self._api.getTagList()
-        
+
         # 处理标签信息
         tags_data = []
         total_usage = 0
-        
+
         for tag in tag_list:
             tag_info = {
                 "name": tag.get("name"),
@@ -226,24 +224,24 @@ class TagListTool(BaseTool):
                 "color": tag.get("color"),
                 "description": tag.get("description")
             }
-            
+
             # 包含使用计数
             if params.include_counts:
                 usage_count = tag.get("usage_count", 0)
                 tag_info["usage_count"] = usage_count
                 total_usage += usage_count
-            
+
             tags_data.append(tag_info)
-        
+
         # 排序
         if params.sort_by == "name":
             tags_data.sort(key=lambda x: x["name"].lower())
         elif params.sort_by == "count" and params.include_counts:
             tags_data.sort(key=lambda x: x["usage_count"], reverse=True)
-        
+
         # 分类统计
         tag_categories = Counter(tag.get("type", "general") for tag in tag_list)
-        
+
         return {
             "tags": tags_data,
             "total_tags": len(tags_data),
@@ -254,10 +252,10 @@ class TagListTool(BaseTool):
 
 
 class ProjectStatsTool(BaseTool):
-    """项目统计信息工具"""
-    
+    """项目统计信息工具."""
+
     def _build_metadata(self) -> ToolMetadata:
-        """构建工具元数据"""
+        """构建工具元数据."""
         return ToolMetadata(
             name="project_stats",
             description="获取项目的详细统计信息",
@@ -270,24 +268,24 @@ class ProjectStatsTool(BaseTool):
             required_permissions=[ToolPermission.READ],
             tags=["stats", "analytics", "metrics"]
         )
-    
+
     @monitor_performance
     @requires_permission(ToolPermission.READ)
-    async def _execute_impl(self, **parameters) -> Dict[str, Any]:
-        """
-        执行项目统计获取
-        
+    async def _execute_impl(self, **parameters) -> dict[str, Any]:
+        """执行项目统计获取.
+
         Args:
             **parameters: 工具参数
-            
+
         Returns:
             项目统计信息
+
         """
         # 获取项目统计
         stats = self._api.getProjectStats()
-        
+
         # 格式化统计信息
-        formatted_stats = {
+        return {
             "content_statistics": {
                 "total_words": stats.get("totalWords", 0),
                 "total_characters": stats.get("totalChars", 0),
@@ -320,8 +318,9 @@ class ProjectStatsTool(BaseTool):
             "metadata": {
                 "last_updated": stats.get("lastUpdated"),
                 "project_created": stats.get("projectCreated"),
-                "total_editing_time_hours": stats.get("totalEditingTime", 0) / 3600 if stats.get("totalEditingTime") else 0
+                "total_editing_time_hours": (
+                    stats.get("totalEditingTime", 0) / 3600 
+                    if stats.get("totalEditingTime") else 0
+                )
             }
         }
-        
-        return formatted_stats

@@ -1,5 +1,4 @@
-"""
-novelWriter – MCP Tools Module
+"""novelWriter – MCP Tools Module.
 ===============================
 
 File History:
@@ -47,18 +46,24 @@ from novelwriter.api.tools.search_tools import (
 )
 
 __all__ = [
-    # Registry and wrapper
-    "ToolRegistry", "LocalToolWrapper",
-    
     # Base classes
-    "BaseTool", "ToolMetadata", "ToolPermission", "ToolExecutionResult",
-    
-    # Project tools
-    "ProjectInfoTool", "ProjectTreeTool",
-    
+    "BaseTool",
+    "CreateDocumentTool",
     # Document tools
-    "DocumentListTool", "DocumentReadTool", "DocumentWriteTool", "CreateDocumentTool",
-    
+    "DocumentListTool",
+    "DocumentReadTool",
+    "DocumentWriteTool",
     # Search tools
-    "GlobalSearchTool", "TagListTool", "ProjectStatsTool"
+    "GlobalSearchTool",
+    "LocalToolWrapper",
+    # Project tools
+    "ProjectInfoTool",
+    "ProjectStatsTool",
+    "ProjectTreeTool",
+    "TagListTool",
+    "ToolExecutionResult",
+    "ToolMetadata",
+    "ToolPermission",
+    # Registry and wrapper
+    "ToolRegistry"
 ]

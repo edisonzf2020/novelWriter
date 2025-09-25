@@ -1,5 +1,4 @@
-"""
-novelWriter – Document Operation Tools Implementation
+"""novelWriter – Document Operation Tools Implementation.
 ======================================================
 
 File History:
@@ -24,12 +23,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 from datetime import datetime
 
 from novelwriter.api.tools.base import (
-    BaseTool, ToolMetadata, ToolPermission, ToolExecutionResult,
-    monitor_performance, requires_permission,
+    BaseTool, ToolMetadata, ToolPermission, monitor_performance, requires_permission,
     DocumentListParams, DocumentReadParams, DocumentWriteParams, CreateDocumentParams
 )
 
@@ -37,10 +35,10 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentListTool(BaseTool):
-    """文档列表获取工具"""
-    
+    """文档列表获取工具."""
+
     def _build_metadata(self) -> ToolMetadata:
-        """构建工具元数据"""
+        """构建工具元数据."""
         return ToolMetadata(
             name="document_list",
             description="获取项目中的文档列表",
@@ -65,25 +63,25 @@ class DocumentListTool(BaseTool):
             required_permissions=[ToolPermission.READ],
             tags=["document", "list", "query"]
         )
-    
+
     @monitor_performance
     @requires_permission(ToolPermission.READ)
-    async def _execute_impl(self, **parameters) -> List[Dict[str, Any]]:
-        """
-        执行文档列表获取
-        
+    async def _execute_impl(self, **parameters) -> list[dict[str, Any]]:
+        """执行文档列表获取.
+
         Args:
             **parameters: 工具参数
-            
+
         Returns:
             文档列表
+
         """
         # 验证参数
         params = DocumentListParams(**parameters)
-        
+
         # 获取文档列表
         documents = self._api.listDocuments(scope=params.scope)
-        
+
         # 处理文档信息
         result = []
         for doc in documents:
@@ -98,7 +96,7 @@ class DocumentListTool(BaseTool):
                 "char_count": doc.char_count,
                 "para_count": doc.para_count
             }
-            
+
             # 包含内容预览
             if params.include_content:
                 try:
@@ -109,17 +107,17 @@ class DocumentListTool(BaseTool):
                 except Exception as e:
                     logger.warning(f"Failed to get content preview for {doc.handle}: {e}")
                     doc_info["content_preview"] = None
-            
+
             result.append(doc_info)
-        
+
         return result
 
 
 class DocumentReadTool(BaseTool):
-    """文档内容读取工具"""
-    
+    """文档内容读取工具."""
+
     def _build_metadata(self) -> ToolMetadata:
-        """构建工具元数据"""
+        """构建工具元数据."""
         return ToolMetadata(
             name="document_read",
             description="读取指定文档的完整内容",
@@ -142,38 +140,38 @@ class DocumentReadTool(BaseTool):
             required_permissions=[ToolPermission.READ],
             tags=["document", "read", "content"]
         )
-    
+
     @monitor_performance
     @requires_permission(ToolPermission.READ)
-    async def _execute_impl(self, **parameters) -> Dict[str, Any]:
-        """
-        执行文档读取
-        
+    async def _execute_impl(self, **parameters) -> dict[str, Any]:
+        """执行文档读取.
+
         Args:
             **parameters: 工具参数
-            
+
         Returns:
             文档内容和元数据
+
         """
         # 验证参数
         params = DocumentReadParams(**parameters)
-        
+
         # 读取文档内容
         content = self._api.getDocText(params.handle)
-        
+
         result = {
             "handle": params.handle,
             "content": content,
             "length": len(content)
         }
-        
+
         # 包含元数据
         if params.include_metadata:
             try:
                 # 获取文档元数据
                 doc_list = self._api.listDocuments(scope="all")
                 doc_meta = next((d for d in doc_list if d.handle == params.handle), None)
-                
+
                 if doc_meta:
                     result["metadata"] = {
                         "title": doc_meta.title,
@@ -187,15 +185,15 @@ class DocumentReadTool(BaseTool):
                     }
             except Exception as e:
                 logger.warning(f"Failed to get metadata for {params.handle}: {e}")
-        
+
         return result
 
 
 class DocumentWriteTool(BaseTool):
-    """文档内容写入工具"""
-    
+    """文档内容写入工具."""
+
     def _build_metadata(self) -> ToolMetadata:
-        """构建工具元数据"""
+        """构建工具元数据."""
         return ToolMetadata(
             name="document_write",
             description="写入或更新文档内容",
@@ -222,39 +220,39 @@ class DocumentWriteTool(BaseTool):
             required_permissions=[ToolPermission.WRITE],
             tags=["document", "write", "update"]
         )
-    
+
     @monitor_performance
     @requires_permission(ToolPermission.WRITE)
-    async def _execute_impl(self, **parameters) -> Dict[str, Any]:
-        """
-        执行文档写入
-        
+    async def _execute_impl(self, **parameters) -> dict[str, Any]:
+        """执行文档写入.
+
         Args:
             **parameters: 工具参数
-            
+
         Returns:
             写入结果
+
         """
         # 验证参数
         params = DocumentWriteParams(**parameters)
-        
+
         # 创建备份
         if params.create_backup:
             try:
-                original_content = self._api.getDocText(params.handle)
+                self._api.getDocText(params.handle)
                 # 这里可以实现备份逻辑
                 logger.debug(f"Backup created for document {params.handle}")
             except Exception as e:
                 logger.warning(f"Failed to create backup: {e}")
-        
+
         # 写入文档
         success = self._api.setDocText(params.handle, params.content)
-        
+
         # 计算写入统计
         word_count = len(params.content.split())
         char_count = len(params.content)
-        para_count = len([p for p in params.content.split('\n\n') if p.strip()])
-        
+        para_count = len([p for p in params.content.split("\n\n") if p.strip()])
+
         return {
             "handle": params.handle,
             "success": success,
@@ -267,10 +265,10 @@ class DocumentWriteTool(BaseTool):
 
 
 class CreateDocumentTool(BaseTool):
-    """创建新文档工具"""
-    
+    """创建新文档工具."""
+
     def _build_metadata(self) -> ToolMetadata:
-        """构建工具元数据"""
+        """构建工具元数据."""
         return ToolMetadata(
             name="create_document",
             description="创建新的文档或笔记",
@@ -302,33 +300,33 @@ class CreateDocumentTool(BaseTool):
             required_permissions=[ToolPermission.CREATE],
             tags=["document", "create", "new"]
         )
-    
+
     @monitor_performance
     @requires_permission(ToolPermission.CREATE)
-    async def _execute_impl(self, **parameters) -> Dict[str, Any]:
-        """
-        执行文档创建
-        
+    async def _execute_impl(self, **parameters) -> dict[str, Any]:
+        """执行文档创建.
+
         Args:
             **parameters: 工具参数
-            
+
         Returns:
             创建结果
+
         """
         # 验证参数
         params = CreateDocumentParams(**parameters)
-        
+
         # 创建文档
         handle = self._api.createDocument(
             title=params.title,
             parent_handle=params.parent_handle,
             doc_type=params.doc_type
         )
-        
+
         # 设置初始内容
         if params.content:
             self._api.setDocText(handle, params.content)
-        
+
         return {
             "handle": handle,
             "title": params.title,
