@@ -32,7 +32,7 @@ from functools import wraps
 
 from pydantic import BaseModel, Field, ConfigDict
 
-from novelwriter.api.exceptions import ToolExecutionError, PermissionError
+from novelwriter.api.exceptions import MCPExecutionError, APIPermissionError
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +174,7 @@ class BaseTool(ABC):
         try:
             # 权限检查
             if not self._check_permissions(self._metadata.required_permissions):
-                raise PermissionError(f"Insufficient permissions for tool: {self.name}")
+                raise APIPermissionError(f"Insufficient permissions for tool: {self.name}")
             
             # 执行工具
             logger.debug(f"Executing tool {self.name} with call_id: {call_id}")
@@ -238,7 +238,7 @@ def requires_permission(*permissions: ToolPermission):
         async def wrapper(self, *args, **kwargs):
             # 检查权限
             if not self._check_permissions(list(permissions)):
-                raise PermissionError(
+                raise APIPermissionError(
                     f"Insufficient permissions. Required: {', '.join(p.value for p in permissions)}"
                 )
             return await func(self, *args, **kwargs)
