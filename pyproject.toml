@@ -157,6 +157,9 @@ markers = [
     "core: Core classes tests",
     "gui: GUI classes tests",
     "compat: OpenAI-compatible live endpoint tests",
+    "integration: Integration tests",
+    "fault_tolerance: Fault tolerance tests",
+    "chaos_engineering: Chaos engineering tests",
 ]
 
 [tool.coverage.run]
