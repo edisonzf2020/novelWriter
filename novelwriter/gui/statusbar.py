@@ -89,6 +89,25 @@ class GuiMainStatus(QStatusBar):
         self.addPermanentWidget(self.statsIcon)
         self.addPermanentWidget(self.statsText)
 
+        # MCP Performance Indicators
+        self.mcpIcon = StatusLED(iPx, iPx, self)
+        self.mcpText = QLabel("MCP", self)
+        self.mcpIcon.setContentsMargins(0, 0, 0, 0)
+        self.mcpText.setContentsMargins(0, 0, 8, 0)
+        self.mcpIcon.setToolTip(self.tr("MCP System Health"))
+        self.mcpText.setToolTip(self.tr("Click for detailed performance metrics"))
+        self.mcpIcon.setVisible(False)  # Hidden by default
+        self.mcpText.setVisible(False)
+        self.addPermanentWidget(self.mcpIcon)
+        self.addPermanentWidget(self.mcpText)
+        
+        # MCP Metrics Display
+        self.mcpMetrics = QLabel("", self)
+        self.mcpMetrics.setContentsMargins(0, 0, 8, 0)
+        self.mcpMetrics.setToolTip(self.tr("API Latency / Tool Calls / Success Rate"))
+        self.mcpMetrics.setVisible(False)
+        self.addPermanentWidget(self.mcpMetrics)
+
         # The Session Clock
         # Set the minimum width so the label doesn't rescale every second
         self.timeIcon = NClickableLabel(self)
@@ -218,6 +237,80 @@ class GuiMainStatus(QStatusBar):
     def updateDocumentStatus(self, status: bool) -> None:
         """Update the document status."""
         self.setDocumentStatus(not status)
+
+    ##
+    #  MCP Status Methods
+    ##
+    
+    def setMCPStatus(self, enabled: bool) -> None:
+        """Enable or disable MCP status display."""
+        self.mcpIcon.setVisible(enabled)
+        self.mcpText.setVisible(enabled)
+        self.mcpMetrics.setVisible(enabled)
+        
+        if enabled:
+            # Initialize with healthy status
+            self.updateMCPHealth("healthy")
+    
+    def updateMCPHealth(self, status: str) -> None:
+        """Update MCP health indicator.
+        
+        Args:
+            status: Health status ("healthy", "degraded", "offline")
+        """
+        if not self.mcpIcon.isVisible():
+            return
+        
+        if status == "healthy":
+            self.mcpIcon.setState(True)  # Green
+            self.mcpText.setText("MCP")
+            self.mcpText.setStyleSheet("")
+        elif status == "degraded":
+            self.mcpIcon.setState(None)  # Yellow/neutral
+            self.mcpText.setText("MCP!")
+            self.mcpText.setStyleSheet(f"color: {SHARED.theme.getBaseColor('yellow').name()};")
+        else:  # offline
+            self.mcpIcon.setState(False)  # Red
+            self.mcpText.setText("MCP✗")
+            self.mcpText.setStyleSheet(f"color: {SHARED.theme.getBaseColor('red').name()};")
+    
+    def updateMCPMetrics(self, latency: float, calls: int, success_rate: float) -> None:
+        """Update MCP performance metrics display.
+        
+        Args:
+            latency: Average API latency in milliseconds
+            calls: Number of tool calls in the last minute
+            success_rate: Success rate as a percentage (0-100)
+        """
+        if not self.mcpMetrics.isVisible():
+            return
+        
+        # Format metrics display
+        latency_str = f"{latency:.1f}ms" if latency < 1000 else f"{latency/1000:.1f}s"
+        success_str = f"{success_rate:.0f}%"
+        
+        # Color code based on performance
+        if latency > 100 or success_rate < 95:
+            color = SHARED.theme.getBaseColor("yellow").name()
+        elif latency > 200 or success_rate < 90:
+            color = SHARED.theme.getBaseColor("red").name()
+        else:
+            color = ""
+        
+        metrics_text = f"{latency_str} | {calls} | {success_str}"
+        self.mcpMetrics.setText(metrics_text)
+        
+        if color:
+            self.mcpMetrics.setStyleSheet(f"color: {color};")
+        else:
+            self.mcpMetrics.setStyleSheet("")
+        
+        # Update tooltip with more details
+        self.mcpMetrics.setToolTip(
+            self.tr("API Latency: {0}\nTool Calls (1min): {1}\nSuccess Rate: {2}").format(
+                latency_str, calls, success_str
+            )
+        )
 
     ##
     #  Private Slots

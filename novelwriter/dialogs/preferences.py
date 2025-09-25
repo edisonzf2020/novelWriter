@@ -1025,6 +1025,217 @@ class GuiPreferences(NDialog):
 
         self._update_ai_controls(self.aiEnabled.isChecked() and ai_available)
 
+        # MCP Hybrid Architecture
+        # ========================
+        
+        title = self.tr("MCP Hybrid Architecture")
+        section += 1
+        self.sidebar.addButton(title, section)
+        self.mainForm.addGroupLabel(title, section)
+        
+        # Import MCP config
+        try:
+            from novelwriter.api.base.config import MCP_CONFIG
+            mcp_available = True
+        except ImportError:
+            MCP_CONFIG = None
+            mcp_available = False
+        
+        # Enable MCP Hybrid
+        self.mcpEnabled = NSwitch(self)
+        self.mcpEnabled.setObjectName("mcpEnabledSwitch")
+        self.mcpEnabled.setChecked(MCP_CONFIG.enabled if mcp_available else False)
+        self.mcpEnabled.setEnabled(mcp_available and ai_available)
+        self.mcpEnabled.toggled.connect(self._update_mcp_controls)
+        self.mainForm.addRow(
+            self.tr("Enable MCP Hybrid"), self.mcpEnabled,
+            self.tr("Enable Model Context Protocol hybrid architecture for AI tools."),
+        )
+        
+        if not mcp_available:
+            self.mcpUnavailableMessage = NColorLabel(
+                self.tr("MCP features are not installed. Install with: pip install novelwriter[ai-mcp]"),
+                self,
+                color=SHARED.theme.errorText,
+                wrap=True,
+            )
+            self.mainForm.addRow(None, self.mcpUnavailableMessage)
+        
+        # Local Tools Configuration
+        self.mcpLocalToolsLabel = NColorLabel(
+            self.tr("Local Tools"), self, scale=1.1, bold=True
+        )
+        self.mainForm.addRow(None, self.mcpLocalToolsLabel)
+        
+        # Create local tool switches
+        self.mcpLocalTools = {}
+        local_tools = [
+            ("project_info", self.tr("Project Information")),
+            ("document_read", self.tr("Document Reading")),
+            ("document_write", self.tr("Document Writing")),
+            ("project_tree", self.tr("Project Tree")),
+            ("search", self.tr("Search")),
+            ("metadata", self.tr("Metadata")),
+            ("statistics", self.tr("Statistics")),
+            ("export", self.tr("Export")),
+        ]
+        
+        for tool_id, tool_name in local_tools:
+            switch = NSwitch(self)
+            switch.setObjectName(f"mcpTool_{tool_id}")
+            if mcp_available:
+                switch.setChecked(MCP_CONFIG.localToolsEnabled.get(tool_id, True))
+            switch.setEnabled(mcp_available and self.mcpEnabled.isChecked())
+            self.mcpLocalTools[tool_id] = switch
+            self.mainForm.addRow(
+                f"  {tool_name}", switch,
+                self.tr(f"Enable {tool_name.lower()} tool for AI agents."),
+            )
+        
+        # External MCP Configuration
+        self.mcpExternalLabel = NColorLabel(
+            self.tr("External MCP Servers"), self, scale=1.1, bold=True
+        )
+        self.mainForm.addRow(None, self.mcpExternalLabel)
+        
+        # External MCP timeout
+        self.mcpTimeout = NSpinBox(self)
+        self.mcpTimeout.setObjectName("mcpTimeoutSpin")
+        self.mcpTimeout.setMinimum(50)
+        self.mcpTimeout.setMaximum(5000)
+        self.mcpTimeout.setSingleStep(50)
+        if mcp_available:
+            self.mcpTimeout.setValue(MCP_CONFIG.externalMCPConfig.get("timeout", 200))
+        else:
+            self.mcpTimeout.setValue(200)
+        self.mcpTimeout.setEnabled(mcp_available and self.mcpEnabled.isChecked())
+        self.mainForm.addRow(
+            self.tr("Connection timeout"), self.mcpTimeout,
+            self.tr("Timeout for external MCP server connections."), unit=self.tr("ms")
+        )
+        
+        # Retry attempts
+        self.mcpRetryAttempts = NSpinBox(self)
+        self.mcpRetryAttempts.setObjectName("mcpRetrySpin")
+        self.mcpRetryAttempts.setMinimum(0)
+        self.mcpRetryAttempts.setMaximum(10)
+        self.mcpRetryAttempts.setSingleStep(1)
+        if mcp_available:
+            self.mcpRetryAttempts.setValue(MCP_CONFIG.externalMCPConfig.get("retryAttempts", 3))
+        else:
+            self.mcpRetryAttempts.setValue(3)
+        self.mcpRetryAttempts.setEnabled(mcp_available and self.mcpEnabled.isChecked())
+        self.mainForm.addRow(
+            self.tr("Retry attempts"), self.mcpRetryAttempts,
+            self.tr("Number of retry attempts for failed connections."),
+        )
+        
+        # Performance Monitoring
+        self.mcpPerfLabel = NColorLabel(
+            self.tr("Performance Monitoring"), self, scale=1.1, bold=True
+        )
+        self.mainForm.addRow(None, self.mcpPerfLabel)
+        
+        # Enable monitoring
+        self.mcpMonitoring = NSwitch(self)
+        self.mcpMonitoring.setObjectName("mcpMonitoringSwitch")
+        if mcp_available:
+            self.mcpMonitoring.setChecked(MCP_CONFIG.performanceConfig.get("monitoringEnabled", True))
+        self.mcpMonitoring.setEnabled(mcp_available and self.mcpEnabled.isChecked())
+        self.mainForm.addRow(
+            self.tr("Enable monitoring"), self.mcpMonitoring,
+            self.tr("Collect performance metrics for MCP operations."),
+        )
+        
+        # API latency threshold
+        self.mcpApiLatency = NSpinBox(self)
+        self.mcpApiLatency.setObjectName("mcpApiLatencySpin")
+        self.mcpApiLatency.setMinimum(1)
+        self.mcpApiLatency.setMaximum(100)
+        self.mcpApiLatency.setSingleStep(1)
+        if mcp_available:
+            thresholds = MCP_CONFIG.performanceConfig.get("alertThresholds", {})
+            self.mcpApiLatency.setValue(thresholds.get("apiLatency", 5))
+        else:
+            self.mcpApiLatency.setValue(5)
+        self.mcpApiLatency.setEnabled(mcp_available and self.mcpEnabled.isChecked() and self.mcpMonitoring.isChecked())
+        self.mainForm.addRow(
+            self.tr("API latency alert"), self.mcpApiLatency,
+            self.tr("Alert threshold for API call latency."), unit=self.tr("ms")
+        )
+        
+        # Tool latency threshold
+        self.mcpToolLatency = NSpinBox(self)
+        self.mcpToolLatency.setObjectName("mcpToolLatencySpin")
+        self.mcpToolLatency.setMinimum(1)
+        self.mcpToolLatency.setMaximum(100)
+        self.mcpToolLatency.setSingleStep(1)
+        if mcp_available:
+            thresholds = MCP_CONFIG.performanceConfig.get("alertThresholds", {})
+            self.mcpToolLatency.setValue(thresholds.get("toolLatency", 10))
+        else:
+            self.mcpToolLatency.setValue(10)
+        self.mcpToolLatency.setEnabled(mcp_available and self.mcpEnabled.isChecked() and self.mcpMonitoring.isChecked())
+        self.mainForm.addRow(
+            self.tr("Tool latency alert"), self.mcpToolLatency,
+            self.tr("Alert threshold for tool execution latency."), unit=self.tr("ms")
+        )
+        
+        # Error rate threshold
+        self.mcpErrorRate = NDoubleSpinBox(self)
+        self.mcpErrorRate.setObjectName("mcpErrorRateSpin")
+        self.mcpErrorRate.setMinimum(0.0)
+        self.mcpErrorRate.setMaximum(1.0)
+        self.mcpErrorRate.setSingleStep(0.01)
+        self.mcpErrorRate.setDecimals(2)
+        if mcp_available:
+            thresholds = MCP_CONFIG.performanceConfig.get("alertThresholds", {})
+            self.mcpErrorRate.setValue(thresholds.get("errorRate", 0.05))
+        else:
+            self.mcpErrorRate.setValue(0.05)
+        self.mcpErrorRate.setEnabled(mcp_available and self.mcpEnabled.isChecked() and self.mcpMonitoring.isChecked())
+        self.mainForm.addRow(
+            self.tr("Error rate alert"), self.mcpErrorRate,
+            self.tr("Alert threshold for error rate (0.0 to 1.0)."),
+        )
+        
+        # Failure Recovery
+        self.mcpRecoveryLabel = NColorLabel(
+            self.tr("Failure Recovery"), self, scale=1.1, bold=True
+        )
+        self.mainForm.addRow(None, self.mcpRecoveryLabel)
+        
+        # Circuit breaker
+        self.mcpCircuitBreaker = NSwitch(self)
+        self.mcpCircuitBreaker.setObjectName("mcpCircuitBreakerSwitch")
+        if mcp_available:
+            self.mcpCircuitBreaker.setChecked(MCP_CONFIG.failureRecoveryConfig.get("enableCircuitBreaker", True))
+        self.mcpCircuitBreaker.setEnabled(mcp_available and self.mcpEnabled.isChecked())
+        self.mainForm.addRow(
+            self.tr("Enable circuit breaker"), self.mcpCircuitBreaker,
+            self.tr("Automatically disable failing services temporarily."),
+        )
+        
+        # Circuit breaker threshold
+        self.mcpCircuitThreshold = NSpinBox(self)
+        self.mcpCircuitThreshold.setObjectName("mcpCircuitThresholdSpin")
+        self.mcpCircuitThreshold.setMinimum(1)
+        self.mcpCircuitThreshold.setMaximum(20)
+        self.mcpCircuitThreshold.setSingleStep(1)
+        if mcp_available:
+            self.mcpCircuitThreshold.setValue(MCP_CONFIG.failureRecoveryConfig.get("circuitBreakerThreshold", 5))
+        else:
+            self.mcpCircuitThreshold.setValue(5)
+        self.mcpCircuitThreshold.setEnabled(mcp_available and self.mcpEnabled.isChecked() and self.mcpCircuitBreaker.isChecked())
+        self.mainForm.addRow(
+            self.tr("Failure threshold"), self.mcpCircuitThreshold,
+            self.tr("Number of failures before circuit breaker activates."),
+        )
+        
+        # Update MCP controls initial state
+        if mcp_available:
+            self._update_mcp_controls(self.mcpEnabled.isChecked())
+
         self.mainForm.finalise()
         self.sidebar.setSelected(1)
 
@@ -1101,6 +1312,44 @@ class GuiPreferences(NDialog):
         current = self.dialogLine.text()
         values = processDialogSymbols(f"{current} {symbol}")
         self.dialogLine.setText(" ".join(values))
+
+    def _update_mcp_controls(self, state: bool) -> None:
+        """Enable or disable MCP configuration inputs based on switch state."""
+        # Enable/disable local tool switches
+        for switch in self.mcpLocalTools.values():
+            switch.setEnabled(state)
+        
+        # Enable/disable external MCP controls
+        self.mcpTimeout.setEnabled(state)
+        self.mcpRetryAttempts.setEnabled(state)
+        
+        # Enable/disable performance monitoring controls
+        self.mcpMonitoring.setEnabled(state)
+        monitoring_enabled = state and self.mcpMonitoring.isChecked()
+        self.mcpApiLatency.setEnabled(monitoring_enabled)
+        self.mcpToolLatency.setEnabled(monitoring_enabled)
+        self.mcpErrorRate.setEnabled(monitoring_enabled)
+        
+        # Enable/disable failure recovery controls
+        self.mcpCircuitBreaker.setEnabled(state)
+        circuit_enabled = state and self.mcpCircuitBreaker.isChecked()
+        self.mcpCircuitThreshold.setEnabled(circuit_enabled)
+        
+        # Connect monitoring toggle to update its sub-controls
+        if not hasattr(self, "_mcp_monitoring_connected"):
+            self.mcpMonitoring.toggled.connect(
+                lambda checked: self._update_mcp_monitoring_controls(checked and state)
+            )
+            self.mcpCircuitBreaker.toggled.connect(
+                lambda checked: self.mcpCircuitThreshold.setEnabled(checked and state)
+            )
+            self._mcp_monitoring_connected = True
+    
+    def _update_mcp_monitoring_controls(self, state: bool) -> None:
+        """Enable or disable MCP monitoring sub-controls."""
+        self.mcpApiLatency.setEnabled(state)
+        self.mcpToolLatency.setEnabled(state)
+        self.mcpErrorRate.setEnabled(state)
 
     def _update_ai_controls(self, state: bool) -> None:
         """Enable or disable AI configuration inputs based on switch state."""
@@ -1510,6 +1759,49 @@ class GuiPreferences(NDialog):
             # In test environments or when AI modules are unavailable,
             # we should not let AI configuration errors affect other settings
             logger.debug("Failed to save AI configuration: %s", exc)
+
+        # MCP Hybrid Architecture Configuration
+        try:
+            from novelwriter.api.base.config import MCP_CONFIG
+            mcp_available = True
+        except ImportError:
+            mcp_available = False
+        
+        if mcp_available and hasattr(self, 'mcpEnabled'):
+            # Save main enable state
+            MCP_CONFIG.enabled = self.mcpEnabled.isChecked()
+            
+            # Save local tools configuration
+            if hasattr(self, 'mcpLocalTools'):
+                local_tools = {}
+                for tool_id, switch in self.mcpLocalTools.items():
+                    local_tools[tool_id] = switch.isChecked()
+                MCP_CONFIG.setValue("localTools", local_tools)
+            
+            # Save external MCP configuration
+            if hasattr(self, 'mcpTimeout'):
+                MCP_CONFIG.setValue("externalMCP.timeout", self.mcpTimeout.value())
+            if hasattr(self, 'mcpRetryAttempts'):
+                MCP_CONFIG.setValue("externalMCP.retryAttempts", self.mcpRetryAttempts.value())
+            
+            # Save performance monitoring configuration
+            if hasattr(self, 'mcpMonitoring'):
+                MCP_CONFIG.setValue("performance.monitoringEnabled", self.mcpMonitoring.isChecked())
+            if hasattr(self, 'mcpApiLatency'):
+                MCP_CONFIG.setValue("performance.alertThresholds.apiLatency", self.mcpApiLatency.value())
+            if hasattr(self, 'mcpToolLatency'):
+                MCP_CONFIG.setValue("performance.alertThresholds.toolLatency", self.mcpToolLatency.value())
+            if hasattr(self, 'mcpErrorRate'):
+                MCP_CONFIG.setValue("performance.alertThresholds.errorRate", self.mcpErrorRate.value())
+            
+            # Save failure recovery configuration
+            if hasattr(self, 'mcpCircuitBreaker'):
+                MCP_CONFIG.setValue("failureRecovery.enableCircuitBreaker", self.mcpCircuitBreaker.isChecked())
+            if hasattr(self, 'mcpCircuitThreshold'):
+                MCP_CONFIG.setValue("failureRecovery.circuitBreakerThreshold", self.mcpCircuitThreshold.value())
+            
+            # TODO: Save MCP config to persistent storage
+            # This would be integrated with CONFIG.saveConfig() in a real implementation
 
         # Finalise
         CONFIG.saveConfig()
