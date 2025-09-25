@@ -64,7 +64,7 @@ class MCPToolManagerDialog(NDialog):
         self._selectedRow = -1
         self._updateTimer = QTimer(self)
         self._updateTimer.timeout.connect(self._refreshStatus)
-        self._updateTimer.setInterval(5000)  # Update every 5 seconds
+        self._updateTimer.setInterval(30000)  # Update every 30 seconds
 
         # Build UI
         self._buildUI()
@@ -72,8 +72,9 @@ class MCPToolManagerDialog(NDialog):
         # Load connections
         self._loadConnections()
         
-        # Start status updates
-        self._updateTimer.start()
+        # Start status updates only if there are connections
+        if self._connections:
+            self._updateTimer.start()
 
         logger.debug("Ready: MCPToolManagerDialog")
 
@@ -273,6 +274,10 @@ class MCPToolManagerDialog(NDialog):
         self._connections.append(connection)
         self._addTableRow(connection)
         self._saveConnections()
+        
+        # Start timer if this is the first connection
+        if len(self._connections) == 1 and not self._updateTimer.isActive():
+            self._updateTimer.start()
         
         # Test the new connection
         self._testConnectionByIndex(len(self._connections) - 1)

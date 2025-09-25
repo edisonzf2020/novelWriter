@@ -53,6 +53,7 @@ ToC.txt
 /tests/lipsum/meta
 /.pytest_cache
 /pytestdebug.log
+/temp
 
 # Coverage
 /.coverage
