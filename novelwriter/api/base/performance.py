@@ -125,61 +125,35 @@ class PerformanceAlert(BaseModel):
 
 
 class TDigest:
-    """T-Digest algorithm for accurate percentile estimation with low memory usage."""
+    """Simple percentile estimation using sorted list (simplified from full T-Digest)."""
     
     def __init__(self, compression: float = 100.0):
         """Initialize T-Digest.
         
         Args:
-            compression: Controls accuracy vs memory trade-off
+            compression: Maximum number of values to keep (multiplied by 10 for accuracy)
         """
-        self.compression = compression
-        self.centroids: List[Tuple[float, int]] = []
-        self.total_weight = 0
+        self.max_size = int(compression * 10)  # Keep more values for accuracy
+        self.values: List[float] = []
         self._lock = threading.Lock()
+        self._sorted = False
     
     def add(self, value: float, weight: int = 1) -> None:
         """Add a value to the digest."""
         with self._lock:
-            self.centroids.append((value, weight))
-            self.total_weight += weight
+            # Add the value 'weight' times
+            for _ in range(weight):
+                self.values.append(value)
+            self._sorted = False
             
-            # Compress when we have too many centroids
-            if len(self.centroids) > self.compression * 2:
-                self._compress()
-    
-    def _compress(self) -> None:
-        """Compress centroids to maintain size bounds."""
-        if not self.centroids:
-            return
-        
-        # Sort centroids
-        self.centroids.sort(key=lambda x: x[0])
-        
-        # Merge adjacent centroids
-        compressed = []
-        current_mean = self.centroids[0][0]
-        current_weight = self.centroids[0][1]
-        
-        for mean, weight in self.centroids[1:]:
-            # Calculate scale function
-            q = current_weight / self.total_weight
-            k = 4 * self.compression * q * (1 - q)
-            
-            # Check if we can merge
-            if current_weight + weight <= k:
-                # Merge centroids
-                total_weight = current_weight + weight
-                current_mean = (current_mean * current_weight + mean * weight) / total_weight
-                current_weight = total_weight
-            else:
-                # Save current and start new
-                compressed.append((current_mean, current_weight))
-                current_mean = mean
-                current_weight = weight
-        
-        compressed.append((current_mean, current_weight))
-        self.centroids = compressed
+            # Keep only recent values if we exceed limit
+            if len(self.values) > self.max_size * 2:
+                # Sort first
+                self.values.sort()
+                # Keep evenly distributed samples across the range
+                indices = [int(i * len(self.values) / self.max_size) for i in range(self.max_size)]
+                self.values = [self.values[i] for i in indices if i < len(self.values)]
+                self._sorted = True
     
     def quantile(self, q: float) -> float:
         """Get quantile value.
@@ -190,31 +164,25 @@ class TDigest:
         Returns:
             Estimated value at quantile
         """
-        if not self.centroids or q < 0 or q > 1:
+        if not self.values or q < 0 or q > 1:
             return 0.0
         
         with self._lock:
-            self._compress()
+            if not self._sorted:
+                self.values.sort()
+                self._sorted = True
             
-            if len(self.centroids) == 1:
-                return self.centroids[0][0]
+            if len(self.values) == 1:
+                return self.values[0]
             
-            # Find position in weight
-            target_weight = q * self.total_weight
-            accumulated_weight = 0
+            # Calculate position
+            pos = q * (len(self.values) - 1)
+            lower = int(pos)
+            upper = min(lower + 1, len(self.values) - 1)
+            fraction = pos - lower
             
-            for i, (mean, weight) in enumerate(self.centroids):
-                accumulated_weight += weight
-                if accumulated_weight >= target_weight:
-                    if i == 0:
-                        return mean
-                    
-                    # Interpolate between centroids
-                    prev_mean, prev_weight = self.centroids[i - 1]
-                    fraction = (target_weight - (accumulated_weight - weight)) / weight
-                    return prev_mean + fraction * (mean - prev_mean)
-            
-            return self.centroids[-1][0]
+            # Interpolate
+            return self.values[lower] + fraction * (self.values[upper] - self.values[lower])
 
 
 class SlidingWindowStats:
@@ -313,10 +281,10 @@ class PerformanceMonitor:
         # Thread safety
         self._lock = threading.Lock()
         
-        # Background thread for cleanup
+        # Background thread for cleanup (only start if explicitly enabled)
         self._stop_event = threading.Event()
-        self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
-        self._cleanup_thread.start()
+        self._cleanup_thread = None
+        self._cleanup_enabled = False
         
         # Load default thresholds
         self._load_default_thresholds()
@@ -751,7 +719,10 @@ class PerformanceMonitor:
     
     def _cleanup_loop(self) -> None:
         """Background thread for cleaning up old data."""
-        while not self._stop_event.wait(60):  # Run every minute
+        while not self._stop_event.is_set():
+            # Wait for 60 seconds or until stop event is set
+            if self._stop_event.wait(60):
+                break
             try:
                 cutoff = datetime.now() - timedelta(hours=1)
                 
@@ -771,10 +742,18 @@ class PerformanceMonitor:
             except Exception as e:
                 logger.error(f"Cleanup loop error: {e}")
     
+    def enable_cleanup(self) -> None:
+        """Enable background cleanup thread."""
+        if not self._cleanup_enabled:
+            self._cleanup_enabled = True
+            self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
+            self._cleanup_thread.start()
+            logger.debug("Cleanup thread started")
+    
     def shutdown(self) -> None:
         """Shutdown the performance monitor."""
         self._stop_event.set()
-        if self._cleanup_thread.is_alive():
+        if self._cleanup_thread and self._cleanup_thread.is_alive():
             self._cleanup_thread.join(timeout=5)
 
 

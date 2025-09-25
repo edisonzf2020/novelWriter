@@ -51,6 +51,7 @@ class TestNovelWriterAPISecurityIntegration:
             project=mock_project,
             readOnly=False,
             enable_security=True,
+            enable_performance=False,
             session_id="test_session"
         )
         
@@ -71,7 +72,8 @@ class TestNovelWriterAPISecurityIntegration:
         api = NovelWriterAPI(
             project=mock_project,
             readOnly=False,
-            enable_security=False
+            enable_security=False,
+            enable_performance=False
         )
         
         # Check security components are not initialized
@@ -83,7 +85,8 @@ class TestNovelWriterAPISecurityIntegration:
         api = NovelWriterAPI(
             project=mock_project,
             readOnly=True,
-            enable_security=True
+            enable_security=True,
+            enable_performance=False
         )
         
         # Only READ permission should be granted
@@ -96,7 +99,8 @@ class TestNovelWriterAPISecurityIntegration:
         """Test that parameters are sanitized."""
         api = NovelWriterAPI(
             project=mock_project,
-            enable_security=True
+            enable_security=True,
+            enable_performance=False
         )
         
         # Mock project meta to test sanitization
@@ -118,7 +122,8 @@ class TestNovelWriterAPISecurityIntegration:
         """Test that operations are audit logged."""
         api = NovelWriterAPI(
             project=mock_project,
-            enable_security=True
+            enable_security=True,
+            enable_performance=False
         )
         
         # Mock project meta
@@ -144,7 +149,8 @@ class TestNovelWriterAPISecurityIntegration:
         api = NovelWriterAPI(
             project=mock_project,
             readOnly=True,  # This will trigger permission checks
-            enable_security=True
+            enable_security=True,
+            enable_performance=False
         )
         
         # Mock tree and document
@@ -168,6 +174,7 @@ class TestNovelWriterAPISecurityIntegration:
         api = NovelWriterAPI(
             project=mock_project,
             enable_security=True,
+            enable_performance=False,
             session_id="test_session"
         )
         
@@ -189,7 +196,8 @@ class TestNovelWriterAPISecurityIntegration:
         """Test rate limiting integration."""
         api = NovelWriterAPI(
             project=mock_project,
-            enable_security=True
+            enable_security=True,
+            enable_performance=False
         )
         
         # Set a very low rate limit for testing
@@ -225,7 +233,7 @@ class TestNovelWriterAPISecurityIntegration:
         
         # Create instance with security
         test_api = TestAPI()
-        api = NovelWriterAPI(project=mock_project, enable_security=True)
+        api = NovelWriterAPI(project=mock_project, enable_security=True, enable_performance=False)
         test_api._security_controller = api._security_controller
         test_api._security_context = api._security_context
         
@@ -249,7 +257,8 @@ class TestNovelWriterAPISecurityIntegration:
         """Test that different risk levels are logged correctly."""
         api = NovelWriterAPI(
             project=mock_project,
-            enable_security=True
+            enable_security=True,
+            enable_performance=False
         )
         
         # Make a successful call first

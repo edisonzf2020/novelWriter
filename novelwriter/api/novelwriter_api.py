@@ -1082,15 +1082,17 @@ class NovelWriterAPI:
 
     @classmethod
     def createInstance(cls, project: NWProject,
-                      readOnly: bool = False) -> NovelWriterAPI:
+                      readOnly: bool = False,
+                      enable_performance: bool = True) -> NovelWriterAPI:
         """Create an API instance.
 
         Args:
             project: The project to wrap
             readOnly: Whether to enforce read-only access
+            enable_performance: Whether to enable performance monitoring
 
         Returns:
             A new NovelWriterAPI instance
 
         """
-        return cls(project=project, readOnly=readOnly)
+        return cls(project=project, readOnly=readOnly, enable_performance=enable_performance)

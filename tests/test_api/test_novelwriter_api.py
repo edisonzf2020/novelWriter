@@ -124,12 +124,12 @@ class TestNovelWriterAPI:
     @pytest.fixture
     def api(self, mockProject):
         """Create an API instance with mock project."""
-        return NovelWriterAPI(project=mockProject)
+        return NovelWriterAPI(project=mockProject, enable_performance=False)
 
     @pytest.fixture
     def readOnlyApi(self, mockProject):
         """Create a read-only API instance."""
-        return NovelWriterAPI(project=mockProject, readOnly=True)
+        return NovelWriterAPI(project=mockProject, readOnly=True, enable_performance=False)
 
     # ======================================================================
     # Test Initialization
@@ -137,19 +137,19 @@ class TestNovelWriterAPI:
 
     def test_api_initialization(self):
         """Test API initialization without project."""
-        api = NovelWriterAPI()
+        api = NovelWriterAPI(enable_performance=False)
         assert api.isProjectLoaded is False
         assert api.isReadOnly is False
 
     def test_api_initialization_with_project(self, mockProject):
         """Test API initialization with project."""
-        api = NovelWriterAPI(project=mockProject)
+        api = NovelWriterAPI(project=mockProject, enable_performance=False)
         assert api.isProjectLoaded is True
         assert api.isReadOnly is False
 
     def test_api_set_project(self, mockProject):
         """Test setting project after initialization."""
-        api = NovelWriterAPI()
+        api = NovelWriterAPI(enable_performance=False)
         assert api.isProjectLoaded is False
 
         api.setProject(mockProject)
@@ -157,7 +157,7 @@ class TestNovelWriterAPI:
 
     def test_api_set_project_none(self):
         """Test setting None as project raises error."""
-        api = NovelWriterAPI()
+        api = NovelWriterAPI(enable_performance=False)
         with pytest.raises(APIValidationError) as exc:
             api.setProject(None)
         assert "Project cannot be None" in str(exc.value)
@@ -185,7 +185,7 @@ class TestNovelWriterAPI:
 
     def test_get_project_meta_no_project(self):
         """Test getting metadata without project raises error."""
-        api = NovelWriterAPI()
+        api = NovelWriterAPI(enable_performance=False)
         with pytest.raises(APIPermissionError) as exc:
             api.getProjectMeta()
         assert "No project is currently loaded" in str(exc.value)
@@ -416,7 +416,7 @@ class TestNovelWriterAPI:
 
     def test_factory_method(self, mockProject):
         """Test factory method for creating API instances."""
-        api = NovelWriterAPI.createInstance(mockProject, readOnly=True)
+        api = NovelWriterAPI.createInstance(mockProject, readOnly=True, enable_performance=False)
         assert api.isProjectLoaded is True
         assert api.isReadOnly is True
 
