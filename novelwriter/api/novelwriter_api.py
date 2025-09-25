@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import time
 from functools import wraps
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, Optional
 from collections.abc import Callable, Mapping
 
 from novelwriter.enum import nwItemClass, nwItemLayout
@@ -40,6 +40,13 @@ from .exceptions import (
     APIOperationError,
     APIPermissionError,
     APIValidationError,
+)
+from .base.security import (
+    SecurityController,
+    SecurityContext,
+    SecurityPermission,
+    RiskLevel,
+    get_security_controller,
 )
 
 if TYPE_CHECKING:
@@ -58,6 +65,7 @@ def validateParams(func: F) -> F:
 
     Validates that required parameters are present and have the correct type.
     Measures execution time and logs performance metrics.
+    Integrates with SecurityController for audit logging.
     """
     @wraps(func)
     def wrapper(self: NovelWriterAPI, *args: Any, **kwargs: Any) -> Any:
@@ -67,12 +75,29 @@ def validateParams(func: F) -> F:
         try:
             # Log API call
             logger.debug(f"API call: {method_name} with args={args}, kwargs={kwargs}")
+            
+            # Sanitize parameters if security controller is available
+            if self._security_controller and self._security_context:
+                sanitized_kwargs = self._security_controller.parameter_sanitizer.sanitize(kwargs)
+            else:
+                sanitized_kwargs = kwargs
 
             # Execute the function
-            result = func(self, *args, **kwargs)
+            result = func(self, *args, **sanitized_kwargs)
 
             # Measure performance
             elapsed_ms = (time.perf_counter() - start_time) * 1000
+            
+            # Audit log successful operation
+            if self._security_controller and self._security_context:
+                self._security_controller.audit_logger.log(
+                    operation=method_name,
+                    context=self._security_context,
+                    result="success",
+                    parameters=sanitized_kwargs,
+                    execution_time_ms=int(elapsed_ms)
+                )
+            
             if elapsed_ms > 5.0:  # Log if exceeds 5ms threshold
                 logger.warning(f"API call {method_name} took {elapsed_ms:.2f}ms (>5ms threshold)")
             else:
@@ -81,9 +106,27 @@ def validateParams(func: F) -> F:
             return result
 
         except APIError:
+            # Audit log error
+            if self._security_controller and self._security_context:
+                self._security_controller.audit_logger.log(
+                    operation=method_name,
+                    context=self._security_context,
+                    result="error",
+                    risk_level=RiskLevel.MEDIUM,
+                    execution_time_ms=int((time.perf_counter() - start_time) * 1000)
+                )
             # Re-raise API errors as-is
             raise
         except Exception as e:
+            # Audit log error
+            if self._security_controller and self._security_context:
+                self._security_controller.audit_logger.log(
+                    operation=method_name,
+                    context=self._security_context,
+                    result="error",
+                    risk_level=RiskLevel.HIGH,
+                    execution_time_ms=int((time.perf_counter() - start_time) * 1000)
+                )
             # Wrap unexpected errors
             logger.error(f"API call {method_name} failed: {e}")
             raise APIOperationError(
@@ -110,15 +153,71 @@ def requiresProject(func: F) -> F:
     return wrapper  # type: ignore
 
 
+def requiresPermission(*required_permissions: SecurityPermission):
+    """Decorator to require specific permissions for API methods.
+    
+    Args:
+        required_permissions: One or more required permissions
+    """
+    def decorator(func: F) -> F:
+        @wraps(func)
+        def wrapper(self: NovelWriterAPI, *args: Any, **kwargs: Any) -> Any:
+            method_name = func.__name__
+            
+            # Check security permissions if controller is available
+            if self._security_controller and self._security_context:
+                # Check if context has any of the required permissions
+                has_permission = any(
+                    self._security_context.has_permission(perm) 
+                    for perm in required_permissions
+                )
+                
+                if not has_permission:
+                    # Log the denial
+                    self._security_controller.audit_logger.log(
+                        operation=method_name,
+                        context=self._security_context,
+                        result="denied",
+                        risk_level=RiskLevel.HIGH,
+                        parameters=kwargs
+                    )
+                    
+                    raise APIPermissionError(
+                        f"Missing required permissions for '{method_name}': {required_permissions}",
+                        operation=method_name
+                    )
+            
+            return func(self, *args, **kwargs)
+        
+        return wrapper  # type: ignore
+    return decorator
+
+
 def requiresWritePermission(func: F) -> F:
-    """Check for write permissions."""
+    """Check for write permissions using SecurityController."""
     @wraps(func)
     def wrapper(self: NovelWriterAPI, *args: Any, **kwargs: Any) -> Any:
+        method_name = func.__name__
+        
+        # Check read-only mode
         if self._readOnly:
             raise APIPermissionError(
-                f"Write operation '{func.__name__}' not allowed in read-only mode",
-                operation=func.__name__
+                f"Write operation '{method_name}' not allowed in read-only mode",
+                operation=method_name
             )
+        
+        # Check security permissions if controller is available
+        if self._security_controller and self._security_context:
+            if not self._security_controller.validate_and_log(
+                operation=method_name,
+                context=self._security_context,
+                parameters=kwargs
+            ):
+                raise APIPermissionError(
+                    f"Permission denied for operation '{method_name}'",
+                    operation=method_name
+                )
+        
         return func(self, *args, **kwargs)
 
     return wrapper  # type: ignore
@@ -141,21 +240,46 @@ class NovelWriterAPI:
     directly accessing core modules.
     """
 
-    __slots__ = ("_cache", "_initialized", "_project", "_readOnly")
+    __slots__ = ("_cache", "_initialized", "_project", "_readOnly", 
+                 "_security_controller", "_security_context")
 
     def __init__(self, project: NWProject | None = None,
-                 readOnly: bool = False) -> None:
+                 readOnly: bool = False,
+                 enable_security: bool = True,
+                 session_id: Optional[str] = None) -> None:
         """Initialize the NovelWriter API.
 
         Args:
             project: The NWProject instance to wrap (can be set later)
             readOnly: Whether to enforce read-only access
+            enable_security: Whether to enable security features
+            session_id: Optional session ID for security context
 
         """
         self._project = project
         self._readOnly = readOnly
         self._cache: dict[str, Any] = {}
         self._initialized = False
+        
+        # Initialize security components
+        if enable_security:
+            self._security_controller = get_security_controller()
+            # Create security context with appropriate permissions
+            permissions = [SecurityPermission.READ]
+            if not readOnly:
+                permissions.extend([
+                    SecurityPermission.WRITE,
+                    SecurityPermission.CREATE,
+                    SecurityPermission.DELETE,
+                    SecurityPermission.TOOL_CALL
+                ])
+            self._security_context = self._security_controller.create_context(
+                session_id=session_id or "default",
+                permissions=permissions
+            )
+        else:
+            self._security_controller = None
+            self._security_context = None
 
         if project is not None:
             self._initialize()
@@ -661,6 +785,63 @@ class NovelWriterAPI:
                     }
 
         return list(tags.values())
+    
+    # ======================================================================
+    # Security Management Methods
+    # ======================================================================
+    
+    def updateSecurityContext(self, permissions: list[SecurityPermission]) -> None:
+        """Update the security context with new permissions.
+        
+        Args:
+            permissions: List of permissions to grant
+            
+        """
+        if self._security_controller and self._security_context:
+            self._security_context.permissions = permissions
+            logger.info(f"Security context updated with permissions: {permissions}")
+    
+    def getSecurityContext(self) -> Optional[SecurityContext]:
+        """Get the current security context.
+        
+        Returns:
+            Current security context or None
+            
+        """
+        return self._security_context
+    
+    def getAuditLogs(self, 
+                     start_time: Optional[Any] = None,
+                     end_time: Optional[Any] = None,
+                     operation: Optional[str] = None) -> list[dict[str, Any]]:
+        """Get audit logs with optional filters.
+        
+        Args:
+            start_time: Start time filter
+            end_time: End time filter  
+            operation: Operation filter
+            
+        Returns:
+            List of audit log entries
+            
+        """
+        if not self._security_controller:
+            return []
+        
+        logs = self._security_controller.audit_logger.query(
+            start_time=start_time,
+            end_time=end_time,
+            operation=operation
+        )
+        
+        return [log.model_dump() for log in logs]
+    
+    def clearSecurityCache(self) -> None:
+        """Clear security-related caches."""
+        if self._security_controller:
+            # Clear any security caches
+            self._cache.clear()
+            logger.info("Security cache cleared")
 
     @validateParams
     @requiresProject
