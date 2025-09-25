@@ -125,7 +125,7 @@ class PerformanceAlert(BaseModel):
 
 
 class TDigest:
-    """Simple percentile estimation using sorted list (simplified from full T-Digest)."""
+    """Simple percentile estimation using reservoir sampling."""
     
     def __init__(self, compression: float = 100.0):
         """Initialize T-Digest.
@@ -137,23 +137,24 @@ class TDigest:
         self.values: List[float] = []
         self._lock = threading.Lock()
         self._sorted = False
+        self._count = 0  # Total values added
     
     def add(self, value: float, weight: int = 1) -> None:
-        """Add a value to the digest."""
+        """Add a value to the digest using reservoir sampling."""
+        import random
         with self._lock:
             # Add the value 'weight' times
             for _ in range(weight):
-                self.values.append(value)
-            self._sorted = False
-            
-            # Keep only recent values if we exceed limit
-            if len(self.values) > self.max_size * 2:
-                # Sort first
-                self.values.sort()
-                # Keep evenly distributed samples across the range
-                indices = [int(i * len(self.values) / self.max_size) for i in range(self.max_size)]
-                self.values = [self.values[i] for i in indices if i < len(self.values)]
-                self._sorted = True
+                self._count += 1
+                if len(self.values) < self.max_size:
+                    # Reservoir not full, just add
+                    self.values.append(value)
+                else:
+                    # Reservoir sampling: randomly replace with decreasing probability
+                    j = random.randint(0, self._count - 1)
+                    if j < self.max_size:
+                        self.values[j] = value
+                self._sorted = False
     
     def quantile(self, q: float) -> float:
         """Get quantile value.
@@ -370,17 +371,18 @@ class PerformanceMonitor:
         """
         operation_id = f"{component}:{operation}:{time.time_ns()}"
         
+        key = f"{component}:{operation}"
         with self._lock:
-            key = f"{component}:{operation}"
             self.active_operations[key] += 1
-            
-            # Record concurrency metric
-            self.record_metric(
-                MetricType.CONCURRENCY,
-                component,
-                operation,
-                self.active_operations[key]
-            )
+            concurrency = self.active_operations[key]
+        
+        # Record concurrency metric (outside the lock to avoid deadlock)
+        self.record_metric(
+            MetricType.CONCURRENCY,
+            component,
+            operation,
+            concurrency
+        )
         
         return operation_id
     
@@ -410,33 +412,33 @@ class PerformanceMonitor:
         with self._lock:
             # Update concurrency
             self.active_operations[key] = max(0, self.active_operations[key] - 1)
-            
-            # Record metrics
+        
+        # Record metrics (outside the lock to avoid deadlock)
+        self.record_metric(
+            MetricType.LATENCY,
+            component,
+            operation,
+            latency_ms,
+            metadata
+        )
+        
+        # Record success/error
+        if success:
             self.record_metric(
-                MetricType.LATENCY,
+                MetricType.SUCCESS_RATE,
                 component,
                 operation,
-                latency_ms,
+                1.0,
                 metadata
             )
-            
-            # Record success/error
-            if success:
-                self.record_metric(
-                    MetricType.SUCCESS_RATE,
-                    component,
-                    operation,
-                    1.0,
-                    metadata
-                )
-            else:
-                self.record_metric(
-                    MetricType.ERROR_RATE,
-                    component,
-                    operation,
-                    1.0,
-                    metadata
-                )
+        else:
+            self.record_metric(
+                MetricType.ERROR_RATE,
+                component,
+                operation,
+                1.0,
+                metadata
+            )
     
     def get_statistics(
         self,
