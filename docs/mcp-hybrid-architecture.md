@@ -471,10 +471,13 @@ novelwriter/
 │   │   ├── document_tools.py  # 文档操作工具
 │   │   └── search_tools.py    # 搜索功能工具
 │   ├── external_mcp/           # 外部MCP管理
-│   │   ├── __init__.py
-│   │   ├── connection.py      # MCP连接管理
-│   │   ├── discovery.py       # 工具发现机制
-│   │   └── client.py          # MCP协议客户端
+│   │   ├── __init__.py              # 已存在（Story 1.3基础）
+│   │   ├── client.py                # 🆕 MCP协议客户端实现
+│   │   ├── connection.py            # 🆕 连接管理和池化
+│   │   ├── discovery.py             # 🆕 工具发现和注册机制
+│   │   ├── cache.py                 # 🆕 结果缓存和优化
+│   │   ├── health_check.py          # 🆕 健康检查和监控
+│   │   └── exceptions.py            # 🆕 外部MCP专用异常类型
 │   ├── base/                   # 共享基础组件
 │   │   ├── __init__.py
 │   │   ├── security.py        # 安全控制器
