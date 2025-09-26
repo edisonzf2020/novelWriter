@@ -160,6 +160,8 @@ markers = [
     "integration: Integration tests",
     "fault_tolerance: Fault tolerance tests",
     "chaos_engineering: Chaos engineering tests",
+    "performance: Performance benchmark tests",
+    "chaos: Chaos engineering and fault injection tests",
 ]
 
 [tool.coverage.run]
